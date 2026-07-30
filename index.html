@@ -24,7 +24,11 @@
   </div>
   <div class="panel">
     <p class="label">如果在 X 上沒有反應</p>
-    <p>X 可能阻擋短版書籤從 GitHub 載入程式。這時改用 <a class="text-link" href="X_CONTEXT_BRIDGE_BOOKMARKLET.txt">完整離線書籤</a>，它不需要再連回 GitHub 載入主程式。</p>
+    <p>先用 <a class="text-link" href="BOOKMARKLET_SELF_TEST.txt">書籤自我測試</a> 確認瀏覽器有沒有執行 <code>javascript:</code>。若測試會跳出提示，但短版沒有反應，表示 X 擋住外部載入；請改用 <a class="text-link" href="X_CONTEXT_BRIDGE_BOOKMARKLET_DIRECT.txt">直接版離線書籤</a>。</p>
+  </div>
+  <div class="panel">
+    <p class="label">三種書籤版本</p>
+    <p><a class="text-link" href="GITHUB_BOOKMARKLET.txt">短版</a> 最好更新，但可能被 X 擋外部載入。<a class="text-link" href="X_CONTEXT_BRIDGE_BOOKMARKLET_DIRECT.txt">直接版</a> 不連 GitHub、不用 eval，比較適合 X 擋載入時。<a class="text-link" href="X_CONTEXT_BRIDGE_BOOKMARKLET.txt">Base64 離線版</a> 比直接版更容易被 eval 限制影響。</p>
   </div>
   <ol>
     <li>手機先把任意頁面加入書籤。</li>
@@ -32,6 +36,6 @@
     <li>把網址替換成 <code>GITHUB_BOOKMARKLET.txt</code> 的完整內容，不是檔案網址。</li>
     <li>開啟 X 私訊網頁後執行這個書籤。</li>
   </ol>
-  <p class="muted">完整離線書籤很長；有些手機瀏覽器可能會限制書籤網址長度。若手機不能存，先用短版；短版被擋時再回到電腦測完整離線版。</p>
+  <p class="muted">離線書籤很長；有些手機瀏覽器可能會限制書籤網址長度。若自我測試不會跳出提示，代表該瀏覽器或操作方式沒有執行書籤。</p>
 </main>
 </html>
