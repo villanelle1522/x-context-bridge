@@ -1,18 +1,19 @@
 # X Context Bridge GitHub Pages 發布檔
 
-只上傳這個資料夾內的八個檔案：
+這個資料夾包含三種用途：
 
-- `CONSOLE_TEST.js`
-- `GITHUB_BOOKMARKLET.txt`
-- `X_CONTEXT_BRIDGE_BOOKMARKLET.txt`
-- `X_CONTEXT_BRIDGE_BOOKMARKLET_DIRECT.txt`
-- `BOOKMARKLET_SELF_TEST.txt`
-- `X_CONTEXT_BRIDGE.user.js`
-- `index.html`
-- `.nojekyll`
+- `X_CONTEXT_BRIDGE.user.js`：電腦、Android 與 iPhone 的主要免費安裝檔。
+- `CONSOLE_TEST.js`：可整份複製到 X 主控台的完整版。
+- `index.html`：依裝置顯示安裝步驟，也提供一鍵複製主控台版。
 
-GitHub Pages 程式網址：
+舊書籤檔仍保留供診斷與相容性研究，但不再是主要安裝方式。實測已確認 X 會以 CSP 阻擋 `GITHUB_BOOKMARKLET.txt` 從 GitHub Pages 載入外部程式。
+
+GitHub Pages 主控台程式網址：
 
 <https://villanelle1522.github.io/x-context-bridge/CONSOLE_TEST.js>
+
+Userscript 安裝網址：
+
+<https://villanelle1522.github.io/x-context-bridge/X_CONTEXT_BRIDGE.user.js>
 
 不要上傳 Notion Token、同步密碼、Gemini API Key、`.dev.vars` 或本機備份 JSON。
