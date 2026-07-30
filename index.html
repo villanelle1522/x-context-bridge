@@ -17,7 +17,11 @@
 <main>
   <h1>X Context Bridge 手機書籤</h1>
   <p>程式網址：<code>https://villanelle1522.github.io/x-context-bridge/CONSOLE_TEST.js</code></p>
-  <a class="button" href="javascript:(()=&gt;{const u=&quot;https://villanelle1522.github.io/x-context-bridge/CONSOLE_TEST.js&quot;,id=&#39;xcb-github-loader&#39;;document.getElementById(id)?.remove();const s=document.createElement(&#39;script&#39;);s.id=id;s.src=u+(u.includes(&#39;?&#39;)?&#39;&amp;&#39;:&#39;?&#39;)+&#39;v=&#39;+Date.now();s.onload=()=&gt;s.remove();s.onerror=()=&gt;{s.remove();alert(&#39;X Context Bridge 載入失敗。請確認 GitHub Pages 網址，或改用完整離線書籤。&#39;)};document.head.append(s)})()">X Context Bridge</a>
+  <a class="button" href="javascript:(()=&gt;{const u=&quot;https://villanelle1522.github.io/x-context-bridge/CONSOLE_TEST.js&quot;,id=&#39;xcb-github-loader&#39;;document.getElementById(id)?.remove();const s=document.createElement(&#39;script&#39;);s.id=id;s.src=u+(u.includes(&#39;?&#39;)?&#39;&amp;&#39;:&#39;?&#39;)+&#39;v=&#39;+Date.now();s.onload=()=&gt;s.remove();s.onerror=()=&gt;{s.remove();alert(&#39;短版書籤已執行，但 X 擋住 GitHub 外部載入。請改貼 X_CONTEXT_BRIDGE_BOOKMARKLET_DIRECT.txt 的直接版離線書籤。&#39;)};document.head.append(s)})()">X Context Bridge</a>
+  <div class="panel">
+    <p class="label">手機推薦：Userscript</p>
+    <p>如果短版書籤跳出「載入失敗」，或離線書籤太長無法儲存，請改安裝 <a class="text-link" href="X_CONTEXT_BRIDGE.user.js">X_CONTEXT_BRIDGE.user.js</a>。這是給腳本管理器使用的版本，不需要把長程式塞進書籤網址。</p>
+  </div>
   <div class="panel">
     <p class="label">最簡單的安裝方式</p>
     <p>電腦可直接把上面的藍色按鈕拖到書籤列。手機請不要只複製 GitHub 網址，要把 <a class="text-link" href="GITHUB_BOOKMARKLET.txt">GITHUB_BOOKMARKLET.txt</a> 裡面整串 <code>javascript:</code> 內容貼到書籤網址。</p>
@@ -36,6 +40,6 @@
     <li>把網址替換成 <code>GITHUB_BOOKMARKLET.txt</code> 的完整內容，不是檔案網址。</li>
     <li>開啟 X 私訊網頁後執行這個書籤。</li>
   </ol>
-  <p class="muted">離線書籤很長；有些手機瀏覽器可能會限制書籤網址長度。若自我測試不會跳出提示，代表該瀏覽器或操作方式沒有執行書籤。</p>
+  <p class="muted">離線書籤很長；有些手機瀏覽器會限制書籤網址長度。遇到長度限制時，Userscript 是比較穩的手機方案。</p>
 </main>
 </html>

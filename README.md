@@ -1,12 +1,13 @@
 # X Context Bridge GitHub Pages 發布檔
 
-只上傳這個資料夾內的七個檔案：
+只上傳這個資料夾內的八個檔案：
 
 - `CONSOLE_TEST.js`
 - `GITHUB_BOOKMARKLET.txt`
 - `X_CONTEXT_BRIDGE_BOOKMARKLET.txt`
 - `X_CONTEXT_BRIDGE_BOOKMARKLET_DIRECT.txt`
 - `BOOKMARKLET_SELF_TEST.txt`
+- `X_CONTEXT_BRIDGE.user.js`
 - `index.html`
 - `.nojekyll`
 
