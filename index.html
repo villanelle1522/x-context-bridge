@@ -88,7 +88,7 @@
 
   <section class="panel">
     <h2>使用限制</h2>
-    <p>工具只能修改 <strong>X 網頁版</strong>，不能覆蓋 Android 或 iPhone 的原生 X App。不同裝置的本機快取目前分開保存；Notion 跨裝置還原仍在開發中。</p>
+    <p>工具只能修改 <strong>X 網頁版</strong>，不能覆蓋 Android 或 iPhone 的原生 X App。不同裝置的本機快取各自保存；設定 Notion 同步閘道後，可在新裝置先預覽再讀回。</p>
   </section>
 
   <details>
@@ -114,7 +114,7 @@
     copyButton.disabled = true;
     copyStatus.textContent = '正在讀取完整版…';
     try {
-      const response = await fetch('CONSOLE_TEST.js?version=0.7.8-test', { cache: 'no-store' });
+      const response = await fetch('CONSOLE_TEST.js?version=0.8.0-test', { cache: 'no-store' });
       if (!response.ok) throw new Error('HTTP ' + response.status);
       const source = await response.text();
       await navigator.clipboard.writeText(source);

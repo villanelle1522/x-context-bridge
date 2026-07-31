@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         X Context Bridge
 // @namespace    https://github.com/villanelle1522/x-context-bridge
-// @version      0.7.8-test
-// @description  X 私訊翻譯、待做、人物筆記、單字本、搜尋與 Notion 備份
+// @version      0.8.0-test
+// @description  X 私訊翻譯、待做、人物筆記、單字本、搜尋與 Notion 跨裝置同步
 // @match        https://x.com/messages*
 // @match        https://x.com/messages/*
 // @match        https://twitter.com/messages*
@@ -20,7 +20,7 @@
  Remove it with: window.__xcbConsoleCleanup()
 */
 (() => {
-  const VERSION = '0.7.8-test';
+  const VERSION = '0.8.0-test';
   const NOTION_SYNC_EPOCH = 2;
   const STYLE_ID = 'xcb-console-style';
   const PAUSE_STYLE_ID = 'xcb-test-clean-style';
@@ -83,7 +83,9 @@
     rememberNotionSecret: false,
     notionLastSyncAt: '',
     notionLastSyncCount: 0,
-    notionLastEndpoint: ''
+    notionLastEndpoint: '',
+    notionLastPullAt: '',
+    notionLastPullCount: 0
   }, JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}'));
   // The Notion backup rows were intentionally rebuilt for sync epoch 2.
   // Clear only the incremental checkpoint once, while keeping the configured
@@ -142,7 +144,7 @@
       vocabularyCount: count => `${count} 個單字`,
       exportData: 'Obsidian Markdown', copyMarkdown: '複製 Markdown',
       downloadMarkdown: '下載 .md', markdownCopied: 'Markdown 已複製',
-      notionBackup: 'Notion 備份', notionOpen: '開啟 Notion 備份',
+      notionBackup: 'Notion 跨裝置同步', notionOpen: '開啟 Notion',
       notionConnection: '連線設定', notionConnected: '已設定', notionNotConnected: '尚未設定',
       notionEndpoint: '同步閘道網址', notionEndpointPlaceholder: 'https://你的同步閘道.workers.dev',
       notionSecret: '同步密碼', notionSecretPlaceholder: '貼上同步密碼',
@@ -150,10 +152,19 @@
       notionWarning: '同步密碼不是 Notion 權杖。預設只保留到頁面關閉；勾選後會存入 x.com 的 localStorage，僅建議個人裝置使用。',
       notionFullSync: '完整備份到 Notion', notionSyncChanges: '同步最新變更',
       notionSyncingFull: '正在完整備份…', notionSyncingChanges: '正在同步變更…',
+      notionRestore: '從 Notion 讀回', notionPulling: '正在讀取 Notion…',
+      notionRestoreHint: '換到新裝置時，先讀回並預覽差異；不會因 Notion 的刪除而刪除本機資料。',
+      notionPullConfirm: (added, updated, conflicts, unchanged) => `已讀取 Notion 備份：\n\n新增 ${added} 筆\n安全更新 ${updated} 筆\n人工譯文衝突 ${conflicts} 筆（會保留本機版本）\n無變更 ${unchanged} 筆\n\n要合併到這個裝置嗎？`,
+      notionPullResult: (added, updated, conflicts) => `已讀回：新增 ${added}、更新 ${updated}；${conflicts} 筆人工譯文衝突已保留本機版本。`,
+      notionPullNoChanges: 'Notion 與這個裝置目前沒有需要合併的差異。',
+      notionPullCancelled: '已取消讀回，這個裝置的資料沒有變更。',
+      notionPullIncomplete: 'Notion 回報查詢結果不完整；本次只合併實際讀到的資料。',
+      notionPullFailed: message => `Notion 讀回失敗：${message}`,
+      notionLastPull: (time, count) => `上次讀回：${time}（${count} 筆）`,
       notionRebuild: '重新完整比對', notionRebuildConfirm: '下次備份會重新比對全部本機資料，但不會刪除 Notion 內容。要繼續嗎？',
       notionMissing: '請先填入同步閘道網址與同步密碼。',
       notionBadEndpoint: '同步閘道必須使用 HTTPS 網址。',
-      notionReady: '尚未完成首次備份。確認連線後，會完整備份目前的翻譯、待做、人物筆記、引用備份與訊息分支。',
+      notionReady: '尚未完成首次備份。確認連線後，會完整備份目前的翻譯、待做、人物筆記、保留的引用內容、單字與訊息分支。',
       notionFullHint: '這次會完整比對本機資料；不會刪除 Notion 內容。',
       notionChangesHint: '只同步上次備份後新增或修改的資料。',
       notionNoChanges: '目前沒有需要同步的新變更。',
@@ -224,7 +235,7 @@
       vocabularyCount: count => `단어 ${count}개`,
       exportData: 'Obsidian Markdown', copyMarkdown: 'Markdown 복사',
       downloadMarkdown: '.md 다운로드', markdownCopied: 'Markdown 복사됨',
-      notionBackup: 'Notion 백업', notionOpen: 'Notion 백업 열기',
+      notionBackup: 'Notion 기기 간 동기화', notionOpen: 'Notion 열기',
       notionConnection: '연결 설정', notionConnected: '설정됨', notionNotConnected: '설정 필요',
       notionEndpoint: '동기화 게이트웨이 주소', notionEndpointPlaceholder: 'https://동기화-게이트웨이.workers.dev',
       notionSecret: '동기화 비밀번호', notionSecretPlaceholder: '동기화 비밀번호 붙여넣기',
@@ -232,10 +243,19 @@
       notionWarning: '동기화 비밀번호는 Notion 토큰이 아닙니다. 기본값은 페이지를 닫을 때까지만 유지되며, 기억을 선택하면 x.com의 localStorage에 저장됩니다. 개인 기기에서만 사용하세요.',
       notionFullSync: 'Notion에 전체 백업', notionSyncChanges: '최신 변경 동기화',
       notionSyncingFull: '전체 백업 중…', notionSyncingChanges: '변경 동기화 중…',
+      notionRestore: 'Notion에서 가져오기', notionPulling: 'Notion을 읽는 중…',
+      notionRestoreHint: '새 기기에서는 먼저 데이터를 가져와 차이를 확인하세요. Notion에서 삭제된 항목 때문에 로컬 데이터가 삭제되지는 않습니다.',
+      notionPullConfirm: (added, updated, conflicts, unchanged) => `Notion 백업을 읽었습니다.\n\n새 항목 ${added}개\n안전한 업데이트 ${updated}개\n수동 번역 충돌 ${conflicts}개(로컬 버전 유지)\n변경 없음 ${unchanged}개\n\n이 기기에 병합할까요?`,
+      notionPullResult: (added, updated, conflicts) => `가져오기 완료: 새 항목 ${added}개, 업데이트 ${updated}개. 수동 번역 충돌 ${conflicts}개는 로컬 버전을 유지했습니다.`,
+      notionPullNoChanges: 'Notion과 이 기기 사이에 병합할 차이가 없습니다.',
+      notionPullCancelled: '가져오기를 취소했습니다. 이 기기의 데이터는 변경되지 않았습니다.',
+      notionPullIncomplete: 'Notion이 불완전한 조회 결과를 반환했습니다. 이번에는 실제로 읽은 데이터만 병합했습니다.',
+      notionPullFailed: message => `Notion 가져오기 실패: ${message}`,
+      notionLastPull: (time, count) => `마지막 가져오기: ${time} (${count}개)`,
       notionRebuild: '전체 다시 비교', notionRebuildConfirm: '다음 백업에서 로컬 데이터를 전부 다시 비교합니다. Notion 내용은 삭제하지 않습니다. 계속할까요?',
       notionMissing: '동기화 게이트웨이 주소와 비밀번호를 입력하세요.',
       notionBadEndpoint: '동기화 게이트웨이는 HTTPS 주소여야 합니다.',
-      notionReady: '아직 첫 백업을 완료하지 않았습니다. 연결 후 번역, 할 일, 인물 메모, 인용 백업과 메시지 분기를 전체 백업합니다.',
+      notionReady: '아직 첫 백업을 완료하지 않았습니다. 연결 후 번역, 할 일, 인물 메모, 보존된 인용 내용, 단어와 메시지 분기를 전체 백업합니다.',
       notionFullHint: '이번에는 로컬 데이터를 전체 비교합니다. Notion 내용은 삭제하지 않습니다.',
       notionChangesHint: '마지막 백업 뒤에 새로 생기거나 수정된 데이터만 동기화합니다.',
       notionNoChanges: '지금 동기화할 새 변경 사항이 없습니다.',
@@ -368,6 +388,7 @@
       id,
       title: cleanTitle,
       messageIds: [],
+      conversationId: location.pathname,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };
@@ -579,11 +600,11 @@
     return { records: [...stableCopies.values(), ...remaining], collapsed };
   };
   const notionBackupRecords = () => {
-    const conversationId = location.pathname;
-    const xUrl = `${location.origin}${location.pathname}`;
     const result = [];
     for (const record of notionMessageSnapshot().records) {
       const direction = preferredDirection(record);
+      const conversationId = record.conversationId || location.pathname;
+      const xUrl = `${location.origin}${conversationId.startsWith('/') ? conversationId : location.pathname}`;
       const base = {
         syncId: record.id,
         conversationId,
@@ -631,6 +652,7 @@
       }
     }
     for (const branch of branchRecords()) {
+      const conversationId = branch.conversationId || location.pathname;
       result.push({
         syncId: branch.id,
         name: branch.title || branch.id,
@@ -646,7 +668,7 @@
         tags: '',
         branchIds: branch.id,
         quoteParentSyncIds: '',
-        xUrl,
+        xUrl: `${location.origin}${conversationId.startsWith('/') ? conversationId : location.pathname}`,
         updatedAt: branch.updatedAt || branch.createdAt || new Date().toISOString(),
         removed: false
       });
@@ -657,7 +679,7 @@
         syncId: entry.id,
         name: entry.word || entry.id,
         kind: '單字',
-        conversationId,
+        conversationId: entry.conversationId || '',
         author: '',
         source: entry.word || '',
         translation: entry.meaning || '',
@@ -671,7 +693,7 @@
         tags: `#單字 #${topic.replace(/\s+/g, '_')}`,
         branchIds: '',
         quoteParentSyncIds: '',
-        xUrl,
+        xUrl: null,
         updatedAt: entry.updatedAt || entry.createdAt || new Date().toISOString(),
         removed: false
       });
@@ -809,6 +831,363 @@
     saveSettings();
     return totals;
   };
+  const notionDirectionKey = record => record.direction === '繁中 → 韓文' ? 'zh-ko' : 'ko-zh';
+  const notionSourceKey = source => ({ '人工': 'manual', 'Gemini': 'gemini', 'Google': 'google' })[source] || '';
+  const notionSourceRank = source => ({ manual: 3, gemini: 2, google: 1 })[source] || 0;
+  const notionTimestamp = value => {
+    const parsed = Date.parse(value || '');
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  const notionList = value => [...new Set(String(value || '').split(/\s+/).map(item => item.trim()).filter(Boolean))];
+  const notionTags = value => [...new Set(notionList(value).map(tag => tag.replace(/^#+/, '')).filter(Boolean))];
+  const notionRemoteRecords = input => {
+    const newest = new Map();
+    for (const raw of Array.isArray(input) ? input : []) {
+      const record = raw && typeof raw === 'object' ? raw : {};
+      const syncId = String(record.syncId || '').trim();
+      if (!syncId) continue;
+      const candidate = { ...record, syncId };
+      const current = newest.get(syncId);
+      const candidateTime = notionTimestamp(candidate.updatedAt);
+      const currentTime = notionTimestamp(current?.updatedAt);
+      if (!current || candidateTime > currentTime ||
+        (candidateTime === currentTime && notionSourceRank(notionSourceKey(candidate.translationSource)) > notionSourceRank(notionSourceKey(current.translationSource)))) {
+        newest.set(syncId, candidate);
+      }
+    }
+    return [...newest.values()];
+  };
+  const notionComparable = record => JSON.stringify([
+    record.name || '',
+    record.kind || '',
+    record.author || '',
+    record.source || '',
+    record.translation || '',
+    record.notes || '',
+    record.direction || '',
+    record.translationSource || '',
+    record.sourceStatus || '',
+    notionList(record.tags).sort(),
+    notionList(record.branchIds).sort(),
+    notionList(record.quoteParentSyncIds).sort(),
+    Boolean(record.removed)
+  ]);
+  const notionManualConflict = (local, remote) => {
+    if (!local?.translation || !remote?.translation || local.translation === remote.translation) return false;
+    const localSource = notionSourceKey(local.translationSource);
+    const remoteSource = notionSourceKey(remote.translationSource);
+    if (localSource === 'manual' && remoteSource !== 'manual') return true;
+    return localSource === 'manual' && remoteSource === 'manual'
+      && notionTimestamp(remote.updatedAt) <= notionTimestamp(local.updatedAt);
+  };
+  const notionAddsMissingMaterial = (local, remote) => {
+    for (const field of ['author', 'source', 'translation', 'notes', 'tags', 'branchIds', 'quoteParentSyncIds']) {
+      if (String(remote[field] || '').trim() && !String(local[field] || '').trim()) return true;
+    }
+    const localTags = new Set(notionList(local.tags));
+    const localBranches = new Set(notionList(local.branchIds));
+    return notionList(remote.tags).some(item => !localTags.has(item))
+      || notionList(remote.branchIds).some(item => !localBranches.has(item));
+  };
+  const notionMergePreview = remoteInput => {
+    const remoteRecords = notionRemoteRecords(remoteInput);
+    const localById = new Map(notionBackupRecords().map(record => [record.syncId, record]));
+    const totals = { added: 0, updated: 0, conflicts: 0, unchanged: 0, ignored: 0, total: remoteRecords.length };
+    for (const remote of remoteRecords) {
+      if (remote.removed) { totals.ignored += 1; continue; }
+      const local = localById.get(remote.syncId);
+      if (!local) { totals.added += 1; continue; }
+      if (notionComparable(local) === notionComparable(remote)) { totals.unchanged += 1; continue; }
+      if (notionManualConflict(local, remote)) { totals.conflicts += 1; continue; }
+      if (notionTimestamp(remote.updatedAt) > notionTimestamp(local.updatedAt) || notionAddsMissingMaterial(local, remote)) {
+        totals.updated += 1;
+      } else {
+        totals.unchanged += 1;
+      }
+    }
+    return { records: remoteRecords, totals };
+  };
+  const shouldUseRemoteTranslation = (record, direction, remote) => {
+    const remoteText = String(remote.translation || '');
+    if (!remoteText) return { use: false, conflict: false };
+    record.translations ||= {};
+    record.translationMeta ||= {};
+    const localText = record.translations[direction] || (direction === 'ko-zh' ? record.translation : '') || '';
+    const localMeta = record.translationMeta[direction] || {};
+    const localSource = localMeta.source || (localText ? 'manual' : '');
+    const remoteSource = notionSourceKey(remote.translationSource) || (remoteText ? 'manual' : '');
+    if (!localText) return { use: true, conflict: false };
+    if (localText === remoteText) {
+      return {
+        use: notionSourceRank(remoteSource) > notionSourceRank(localSource)
+          || notionTimestamp(remote.updatedAt) > notionTimestamp(localMeta.updatedAt),
+        conflict: false
+      };
+    }
+    if (localSource === 'manual' && remoteSource !== 'manual') return { use: false, conflict: true };
+    if (remoteSource === 'manual' && localSource !== 'manual') return { use: true, conflict: false };
+    const localUpdatedAt = localMeta.updatedAt || record.updatedAt || record.savedAt;
+    if (localSource === 'manual' && remoteSource === 'manual') {
+      return notionTimestamp(remote.updatedAt) > notionTimestamp(localUpdatedAt)
+        ? { use: true, conflict: false }
+        : { use: false, conflict: true };
+    }
+    if (notionSourceRank(remoteSource) !== notionSourceRank(localSource)) {
+      return { use: notionSourceRank(remoteSource) > notionSourceRank(localSource), conflict: false };
+    }
+    return { use: notionTimestamp(remote.updatedAt) > notionTimestamp(localUpdatedAt), conflict: false };
+  };
+  const ensureImportedMessage = (id, remote = {}) => {
+    const now = remote.updatedAt || new Date().toISOString();
+    return state.messages[id] ||= {
+      id,
+      text: '',
+      translation: '',
+      notes: '',
+      translations: {},
+      notesByDirection: {},
+      translationMeta: {},
+      page: 0,
+      savedAt: now,
+      updatedAt: now
+    };
+  };
+  const mergeImportedMessage = remote => {
+    const record = ensureImportedMessage(remote.syncId, remote);
+    const direction = notionDirectionKey(remote);
+    let changed = false;
+    let conflict = false;
+    if (!record.text && remote.source) { record.text = remote.source; changed = true; }
+    if (record.quoteOnly && remote.sourceStatus === 'direct' && remote.source) {
+      record.text = remote.source;
+      record.quoteOnly = false;
+      record.recoveredFromQuote = false;
+      changed = true;
+    }
+    if (!record.author && remote.author) { record.author = remote.author; changed = true; }
+    if (!record.quoteAuthor && remote.sourceStatus === 'quote_only' && remote.author) {
+      record.quoteAuthor = remote.author;
+      changed = true;
+    }
+    if (remote.conversationId && !record.conversationId) {
+      record.conversationId = remote.conversationId;
+      changed = true;
+    }
+    if (remote.sourceStatus === 'quote_only') {
+      if (!record.quoteOnly) changed = true;
+      record.quoteOnly = true;
+      record.recoveredFromQuote = true;
+      record.seenInQuote = true;
+    }
+    const translationDecision = shouldUseRemoteTranslation(record, direction, remote);
+    conflict = translationDecision.conflict;
+    if (translationDecision.use) {
+      record.translations ||= {};
+      record.translationMeta ||= {};
+      record.translations[direction] = remote.translation;
+      record.translationMeta[direction] = {
+        source: notionSourceKey(remote.translationSource) || 'manual',
+        updatedAt: remote.updatedAt || new Date().toISOString()
+      };
+      if (direction === 'ko-zh') record.translation = remote.translation;
+      changed = true;
+    }
+    record.notesByDirection ||= {};
+    const localNotes = record.notesByDirection[direction] || (direction === 'ko-zh' ? record.notes : '') || '';
+    if (remote.notes && (!localNotes || notionTimestamp(remote.updatedAt) > notionTimestamp(record.updatedAt || record.savedAt))) {
+      record.notesByDirection[direction] = remote.notes;
+      if (direction === 'ko-zh') record.notes = remote.notes;
+      changed = true;
+    }
+    const mergedTags = [...new Set([...(record.tags || []), ...notionTags(remote.tags)])];
+    if (mergedTags.length !== (record.tags || []).length) { record.tags = mergedTags; changed = true; }
+    const mergedBranches = [...new Set([...(record.branchIds || []), ...notionList(remote.branchIds)])];
+    if (mergedBranches.length !== (record.branchIds || []).length) { record.branchIds = mergedBranches; changed = true; }
+    record.quotedBy ||= [];
+    const quotedIds = new Set(record.quotedBy.map(item => item.sourceRecordId || item.id || ''));
+    for (const id of notionList(remote.quoteParentSyncIds)) {
+      if (!quotedIds.has(id)) {
+        quotedIds.add(id);
+        record.quotedBy.push({ id, sourceRecordId: id });
+        changed = true;
+      }
+    }
+    if (changed && notionTimestamp(remote.updatedAt) > notionTimestamp(record.updatedAt)) {
+      record.updatedAt = remote.updatedAt;
+    }
+    return { changed, conflict };
+  };
+  const mergeImportedCollection = (remote, mode) => {
+    const suffix = mode === 'todo' ? ':todo' : ':note';
+    const baseId = remote.syncId.endsWith(suffix) ? remote.syncId.slice(0, -suffix.length) : remote.syncId;
+    const record = ensureImportedMessage(baseId, remote);
+    const wasPresent = Boolean(record[mode]);
+    const remoteIsNewer = notionTimestamp(remote.updatedAt) > notionTimestamp(record.updatedAt || record.savedAt);
+    if (wasPresent && !remoteIsNewer) return false;
+    record[mode] = true;
+    if (mode === 'todo') {
+      record.todoTitle = remote.name || record.todoTitle || '';
+      record.todoExcerpt = remote.source || record.todoExcerpt || record.text || '';
+      record.todoExcerptTranslation = remote.translation || record.todoExcerptTranslation || '';
+      record.todoExcerptLinked = false;
+    } else {
+      record.noteText = remote.notes || remote.name || record.noteText || '';
+      record.noteExcerpt = remote.source || record.noteExcerpt || '';
+      record.noteExcerptTranslation = remote.translation || record.noteExcerptTranslation || '';
+      record.noteExcerptLinked = false;
+      if (!remote.source && /^manual-note-/.test(baseId)) record.manualEntry = true;
+    }
+    if (remote.conversationId && !record.conversationId) record.conversationId = remote.conversationId;
+    if (remote.updatedAt) record.updatedAt = remote.updatedAt;
+    return true;
+  };
+  const vocabularyDetailsFromRemote = remote => {
+    const pronunciation = String(remote.notes || '').match(/^(?:發音|발음)\s*[:：]\s*(.*)$/mi)?.[1]?.trim() || '';
+    let topic = String(remote.notes || '').match(/^(?:主題|주제)\s*[:：]\s*(.*)$/mi)?.[1]?.trim() || '';
+    if (!topic) {
+      topic = notionTags(remote.tags).find(tag => !['單字', '단어'].includes(tag))?.replace(/_/g, ' ') || '';
+    }
+    return { pronunciation, topic };
+  };
+  const mergeImportedVocabulary = remote => {
+    const existing = state.vocabulary[remote.syncId];
+    if (existing && notionTimestamp(remote.updatedAt) <= notionTimestamp(existing.updatedAt || existing.createdAt)) return false;
+    const details = vocabularyDetailsFromRemote(remote);
+    state.vocabulary[remote.syncId] = {
+      ...existing,
+      id: remote.syncId,
+      word: remote.source || remote.name || existing?.word || '',
+      meaning: remote.translation || existing?.meaning || '',
+      pronunciation: details.pronunciation || existing?.pronunciation || '',
+      topic: details.topic || existing?.topic || '',
+      createdAt: existing?.createdAt || remote.updatedAt || new Date().toISOString(),
+      updatedAt: remote.updatedAt || new Date().toISOString()
+    };
+    return true;
+  };
+  const mergeImportedBranch = remote => {
+    const existing = state.branches[remote.syncId];
+    const remoteIds = String(remote.source || '').split(/\r?\n/).map(item => item.trim()).filter(Boolean);
+    const mergedIds = [...new Set([...(existing?.messageIds || []), ...remoteIds])];
+    const title = remote.name || existing?.title || remote.syncId;
+    const changed = !existing || title !== existing.title || mergedIds.length !== (existing.messageIds || []).length;
+    state.branches[remote.syncId] = {
+      ...existing,
+      id: remote.syncId,
+      title,
+      messageIds: mergedIds,
+      conversationId: existing?.conversationId || remote.conversationId || '',
+      createdAt: existing?.createdAt || remote.updatedAt || new Date().toISOString(),
+      updatedAt: notionTimestamp(remote.updatedAt) > notionTimestamp(existing?.updatedAt) ? remote.updatedAt : (existing?.updatedAt || remote.updatedAt)
+    };
+    return changed;
+  };
+  const applyNotionMerge = remoteInput => {
+    const preview = notionMergePreview(remoteInput);
+    const priority = { '訊息': 0, '引用備份': 0, '待做': 1, '人物筆記': 1, '單字': 2, '訊息分支': 3 };
+    const activeRecords = preview.records
+      .filter(record => !record.removed)
+      .sort((a, b) => (priority[a.kind] ?? 9) - (priority[b.kind] ?? 9));
+    for (const remote of activeRecords) {
+      if (remote.kind === '訊息' || remote.kind === '引用備份') mergeImportedMessage(remote);
+      else if (remote.kind === '待做') mergeImportedCollection(remote, 'todo');
+      else if (remote.kind === '人物筆記') mergeImportedCollection(remote, 'note');
+      else if (remote.kind === '單字') mergeImportedVocabulary(remote);
+      else if (remote.kind === '訊息分支') mergeImportedBranch(remote);
+    }
+    for (const branch of Object.values(state.branches || {})) {
+      for (const messageId of branch.messageIds || []) {
+        const record = state.messages[messageId];
+        if (!record) continue;
+        record.branchIds ||= [];
+        if (!record.branchIds.includes(branch.id)) record.branchIds.push(branch.id);
+      }
+    }
+    save();
+    return preview.totals;
+  };
+  const directNotionPull = async endpoint => {
+    const records = [];
+    let cursor = '';
+    let incomplete = false;
+    for (let page = 0; page < 200; page += 1) {
+      const response = await fetch(`${endpoint}/pull`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${sessionNotionSecret}`
+        },
+        body: JSON.stringify(cursor ? { cursor } : {})
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+      records.push(...(Array.isArray(data.records) ? data.records : []));
+      incomplete ||= Boolean(data.incomplete);
+      if (!data.hasMore) return { records, incomplete };
+      if (!data.nextCursor || data.nextCursor === cursor) throw new Error('Notion 回傳了無效的分頁游標。');
+      cursor = data.nextCursor;
+    }
+    throw new Error('Notion 資料超過安全讀取上限。');
+  };
+  const bridgeNotionPull = endpoint => {
+    const endpointUrl = new URL(endpoint);
+    const requestId = `xcb-pull-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const bridge = window.open(`${endpoint}/bridge`, 'xcb-notion-bridge', 'popup,width=480,height=620');
+    if (!bridge) throw new Error('瀏覽器封鎖了同步視窗，請允許彈出式視窗後再試一次。');
+    return new Promise((resolve, reject) => {
+      const records = [];
+      let incomplete = false;
+      const cleanup = () => {
+        clearInterval(sender);
+        clearTimeout(timeout);
+        window.removeEventListener('message', onMessage);
+      };
+      const send = () => {
+        try {
+          bridge.postMessage({
+            type: 'xcb:notion-pull',
+            requestId,
+            secret: sessionNotionSecret
+          }, endpointUrl.origin);
+        } catch {}
+      };
+      const onMessage = event => {
+        if (event.origin !== endpointUrl.origin) return;
+        const data = event.data || {};
+        if (data.requestId !== requestId) return;
+        if (data.type === 'xcb:notion-pull-accepted') {
+          clearInterval(sender);
+          return;
+        }
+        if (data.type === 'xcb:notion-pull-progress') {
+          records.push(...(Array.isArray(data.records) ? data.records : []));
+          return;
+        }
+        if (data.type !== 'xcb:notion-pull-result') return;
+        cleanup();
+        if (!data.ok) {
+          reject(new Error(data.error || 'Notion bridge restore failed.'));
+          return;
+        }
+        incomplete = Boolean(data.incomplete);
+        resolve({ records, incomplete });
+      };
+      const timeout = setTimeout(() => {
+        cleanup();
+        reject(new Error('Notion 讀取視窗超過 30 分鐘仍未完成。'));
+      }, 1800000);
+      const sender = setInterval(send, 700);
+      window.addEventListener('message', onMessage);
+      setTimeout(send, 500);
+    });
+  };
+  const pullNotionBackup = async () => {
+    const endpoint = normalizeNotionEndpoint(settings.notionEndpoint);
+    if (!endpoint || !sessionNotionSecret) throw new Error(t('notionMissing'));
+    if (!/^https:\/\//i.test(endpoint)) throw new Error(t('notionBadEndpoint'));
+    const shouldUseBridge = new URL(endpoint).origin !== location.origin;
+    return shouldUseBridge ? bridgeNotionPull(endpoint) : directNotionPull(endpoint);
+  };
   const retryInfo = record => {
     record.autoTranslationRetry ||= {};
     return record.autoTranslationRetry[settings.direction] ||= { count: 0, nextAt: 0 };
@@ -874,6 +1253,7 @@
     }
     const record = state.messages[id] ||= { id, text, translation: '', notes: '', page: 0, savedAt: new Date().toISOString() };
     record.nativeTestId = el.getAttribute?.('data-testid') || record.nativeTestId || '';
+    record.conversationId ||= location.pathname;
     if (sanitizeRecord(record, text)) save();
     rememberQuotedMessage(el, record);
     return record;
@@ -881,6 +1261,7 @@
   const rememberQuotedMessage = (el, sourceRecord) => {
     const quote = quoteInfoOf(el);
     if (!quote.text) return null;
+    let changed = false;
     const directMatches = Object.values(state.messages).filter(record => !record.quoteOnly && record.id !== sourceRecord.id && record.text === quote.text);
     const quoteId = `quote-${hash(`${location.pathname}|${quote.author}|${quote.text}`)}`;
     const recovered = directMatches.length === 1
@@ -892,17 +1273,29 @@
           notes: '',
           page: 0,
           savedAt: new Date().toISOString(),
+          conversationId: location.pathname,
           recoveredFromQuote: true,
           quoteOnly: true
         });
+    if (!recovered.conversationId) { recovered.conversationId = location.pathname; changed = true; }
     recovered.seenInQuote = true;
-    recovered.quoteAuthor ||= quote.author;
+    if (!recovered.quoteAuthor && quote.author) { recovered.quoteAuthor = quote.author; changed = true; }
     recovered.quotedBy ||= [];
     if (!recovered.quotedBy.some(item => item.id === sourceRecord.id)) {
       recovered.quotedBy.push({ id: sourceRecord.id, nativeTestId: sourceRecord.nativeTestId || '', text: sourceRecord.text });
+      changed = true;
     }
     sourceRecord.quotedMessageIds ||= [];
-    if (!sourceRecord.quotedMessageIds.includes(recovered.id)) sourceRecord.quotedMessageIds.push(recovered.id);
+    if (!sourceRecord.quotedMessageIds.includes(recovered.id)) {
+      sourceRecord.quotedMessageIds.push(recovered.id);
+      changed = true;
+    }
+    if (changed) {
+      const now = new Date().toISOString();
+      recovered.updatedAt = now;
+      sourceRecord.updatedAt = now;
+      save();
+    }
     drawQuotePreview(quote.element, recovered);
     return recovered;
   };
@@ -1007,7 +1400,7 @@
     .xcb-console-collapsible{border-top:1px solid #2f3336;padding-top:4px}.xcb-console-collapsible>summary{display:flex;align-items:center;gap:8px;min-height:44px;cursor:pointer;list-style:none;color:#eff3f4;font-weight:700}.xcb-console-collapsible>summary::-webkit-details-marker{display:none}.xcb-console-collapsible>summary::after{content:"›";margin-left:auto;color:#8b98a5;font-size:20px;transform:rotate(90deg);transition:transform .18s}.xcb-console-collapsible[open]>summary::after{transform:rotate(-90deg)}.xcb-console-collapsible-count{color:#8b98a5;font-size:12px;font-weight:400}.xcb-console-collapsible-body{display:grid;gap:9px;padding-bottom:4px}
     .xcb-console-vocabulary-editor,.xcb-console-vocabulary-group{overflow:hidden;border:1px solid #2f3336;border-radius:16px;background:#0f1419}.xcb-console-vocabulary-editor>summary,.xcb-console-vocabulary-group>summary{display:flex;align-items:center;gap:9px;min-height:48px;box-sizing:border-box;padding:10px 14px;cursor:pointer;list-style:none;color:#eff3f4}.xcb-console-vocabulary-editor>summary::-webkit-details-marker,.xcb-console-vocabulary-group>summary::-webkit-details-marker{display:none}.xcb-console-vocabulary-editor>summary::after,.xcb-console-vocabulary-group>summary::after{content:"›";margin-left:8px;color:#8b98a5;font-size:22px;line-height:1;transform:rotate(90deg);transition:transform .18s}.xcb-console-vocabulary-editor[open]>summary::after,.xcb-console-vocabulary-group[open]>summary::after{transform:rotate(-90deg)}.xcb-console-vocabulary-editor>summary{font-weight:700}.xcb-console-vocabulary-group>summary strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.xcb-console-vocabulary-group>summary small{margin-left:auto;color:#8b98a5;font-size:12px;white-space:nowrap}.xcb-console-vocabulary-form{display:grid;gap:10px;padding:14px;border-top:1px solid #2f3336;background:#000}.xcb-console-vocabulary-form textarea{width:100%;min-height:78px;box-sizing:border-box;padding:9px 11px;resize:vertical;border:1px solid #536471;border-radius:12px;color:#eff3f4;background:#0f1419;font:inherit}.xcb-console-vocabulary-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.xcb-console-vocabulary-groups{display:grid;gap:9px}.xcb-console-vocabulary-group-list{border-top:1px solid #2f3336}.xcb-console-vocabulary-group-list .xcb-console-list-row:not(:last-child){border-bottom:1px solid #202327}.xcb-console-vocabulary-card{border:0!important;border-radius:0!important;background:transparent!important;padding:12px 50px 12px 14px!important}.xcb-console-vocabulary-card:hover{background:#16181c!important}.xcb-console-vocabulary-wordline{display:flex;align-items:baseline;gap:8px;min-width:0}.xcb-console-vocabulary-wordline strong{overflow:visible;white-space:normal;font-size:16px}.xcb-console-vocabulary-card .xcb-console-vocabulary-pronunciation{color:#8b98a5;font-size:13px}.xcb-console-vocabulary-meaning{color:#eff3f4;line-height:1.45}.xcb-console-vocabulary-group-list .xcb-console-list-remove{top:50%;transform:translateY(-50%)}
     .xcb-console-section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.xcb-console-section-heading h3{margin:0;color:#eff3f4;font-size:15px}.xcb-console-section-heading a{color:#1d9bf0;font-size:13px;text-decoration:none}.xcb-console-notion{margin-top:4px;padding:14px;border:1px solid #2f3336;border-radius:16px;background:#0f1419}.xcb-console-panel button:disabled{cursor:wait;opacity:.65}
-    .xcb-console-connection{border:1px solid #2f3336;border-radius:14px;background:#000}.xcb-console-connection>summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px;box-sizing:border-box;padding:9px 12px;cursor:pointer;list-style:none;font-weight:600}.xcb-console-connection>summary::-webkit-details-marker{display:none}.xcb-console-connection>summary::after{content:"›";margin-left:auto;color:#8b98a5;font-size:22px;line-height:1;transform:rotate(90deg);transition:transform .18s}.xcb-console-connection[open]>summary::after{transform:rotate(-90deg)}.xcb-console-connection-state{margin-left:auto;color:#8b98a5;font-size:12px;font-weight:400}.xcb-console-connection-fields{display:grid;gap:12px;padding:4px 12px 12px;border-top:1px solid #2f3336}.xcb-console-sync-state{display:flex;align-items:center;justify-content:space-between;gap:10px}.xcb-console-sync-state .xcb-console-notion-status{margin:0}.xcb-console-text-button{min-height:32px!important;padding:4px 8px!important;color:#1d9bf0!important;background:transparent!important;font-size:12px!important;white-space:nowrap}.xcb-console-sync-kind{margin:0;padding:9px 11px;border-radius:12px;color:#b6c2cb;background:#16181c;font-size:13px}
+    .xcb-console-connection{border:1px solid #2f3336;border-radius:14px;background:#000}.xcb-console-connection>summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px;box-sizing:border-box;padding:9px 12px;cursor:pointer;list-style:none;font-weight:600}.xcb-console-connection>summary::-webkit-details-marker{display:none}.xcb-console-connection>summary::after{content:"›";margin-left:auto;color:#8b98a5;font-size:22px;line-height:1;transform:rotate(90deg);transition:transform .18s}.xcb-console-connection[open]>summary::after{transform:rotate(-90deg)}.xcb-console-connection-state{margin-left:auto;color:#8b98a5;font-size:12px;font-weight:400}.xcb-console-connection-fields{display:grid;gap:12px;padding:4px 12px 12px;border-top:1px solid #2f3336}.xcb-console-sync-state{display:flex;align-items:center;justify-content:space-between;gap:10px}.xcb-console-sync-state .xcb-console-notion-status{margin:0;white-space:pre-line}.xcb-console-text-button{min-height:32px!important;padding:4px 8px!important;color:#1d9bf0!important;background:transparent!important;font-size:12px!important;white-space:nowrap}.xcb-console-sync-kind{margin:0;padding:9px 11px;border-radius:12px;color:#b6c2cb;background:#16181c;font-size:13px}
     .xcb-console-master{margin-right:auto!important;border:1px solid #f4212e!important;color:#ff8a91!important;background:#20090c!important;font-weight:700!important}
     .xcb-console-master:hover{color:#fff!important;background:#3a0b10!important}
     .xcb-console-entry-fallback{touch-action:none;cursor:ns-resize}.xcb-console-entry-fallback.xcb-console-dragging{cursor:grabbing;opacity:.85}
@@ -1480,7 +1873,10 @@
         const lastSync = settings.notionLastSyncAt
           ? t('notionLastSync', new Date(settings.notionLastSyncAt).toLocaleString(), settings.notionLastSyncCount || 0)
           : t('notionReady');
-        const notionStatusText = notionNotice || lastSync;
+        const lastPull = settings.notionLastPullAt
+          ? t('notionLastPull', new Date(settings.notionLastPullAt).toLocaleString(), settings.notionLastPullCount || 0)
+          : '';
+        const notionStatusText = notionNotice || [lastSync, lastPull].filter(Boolean).join('\n');
         const fullSync = notionIsFullSync();
         const notionConfigured = Boolean(normalizeNotionEndpoint(settings.notionEndpoint) && sessionNotionSecret);
         const syncLabel = t(fullSync ? 'notionFullSync' : 'notionSyncChanges');
@@ -1489,7 +1885,7 @@
         const collapsedLegacy = notionMessageSnapshot().collapsed;
         const pendingBytes = new TextEncoder().encode(JSON.stringify(notionBackupPayload(pendingRecords))).length;
         const pendingSummary = t('notionPending', pendingRecords.length, formatBackupBytes(pendingBytes));
-        panel = `<div class="xcb-console-panel"><div class="xcb-console-note-add"><input data-data-search value="${escape(dataQuery)}" placeholder="${escape(t('searchAll'))}"><button class="xcb-console-data-search">${escape(t('search'))}</button></div>${query ? `<section class="xcb-console-data-section"><h3>${escape(t('search'))}</h3><div class="xcb-console-search-results">${resultRows || `<p class="xcb-console-empty">${escape(t('noSearchResults'))}</p>`}</div></section>` : ''}<section class="xcb-console-data-section"><h3>${escape(t('branches'))}</h3><div class="xcb-console-list">${branchRows || `<p class="xcb-console-empty">${escape(t('noBranches'))}</p>`}</div>${selectedBranch ? `<div class="xcb-console-list">${branchMessages}</div>` : ''}</section><section class="xcb-console-data-section"><h3>${escape(t('exportData'))}</h3><div class="xcb-console-data-actions"><button class="xcb-console-copy-markdown">${escape(t('copyMarkdown'))}</button><button class="xcb-console-download-markdown primary">${escape(t('downloadMarkdown'))}</button></div></section><section class="xcb-console-data-section xcb-console-notion"><div class="xcb-console-section-heading"><h3>${escape(t('notionBackup'))}</h3><a href="${NOTION_HOME_URL}" target="_blank" rel="noopener noreferrer">${escape(t('notionOpen'))}</a></div><details class="xcb-console-connection" ${notionConfigured ? '' : 'open'}><summary><span>${escape(t('notionConnection'))}</span><span class="xcb-console-connection-state">${escape(t(notionConfigured ? 'notionConnected' : 'notionNotConnected'))}</span></summary><div class="xcb-console-connection-fields"><label class="xcb-console-field"><span>${escape(t('notionEndpoint'))}</span><input data-setting="notion-endpoint" type="url" inputmode="url" value="${escape(settings.notionEndpoint || '')}" placeholder="${escape(t('notionEndpointPlaceholder'))}"></label><label class="xcb-console-field"><span>${escape(t('notionSecret'))}</span><input data-setting="notion-secret" type="password" autocomplete="off" placeholder="${escape(sessionNotionSecret ? t('apiConfigured') : t('notionSecretPlaceholder'))}"></label><label class="xcb-console-toggle"><span>${escape(t('notionRemember'))}</span><input data-setting="remember-notion-secret" type="checkbox" ${settings.rememberNotionSecret ? 'checked' : ''}></label><p class="xcb-console-muted">${escape(t('notionWarning'))}</p></div></details><p class="xcb-console-sync-kind">${escape(syncHint)}</p>${collapsedLegacy ? `<p class="xcb-console-muted">${escape(t('notionLegacyHidden', collapsedLegacy))}</p>` : ''}<p class="xcb-console-muted"><strong>${escape(pendingSummary)}</strong></p><div class="xcb-console-data-actions"><button class="xcb-console-notion-sync primary">${escape(syncLabel)}</button><button class="xcb-console-notion-export">${escape(t('notionExportJson'))}</button></div><div class="xcb-console-sync-state"><p class="xcb-console-notion-status xcb-console-muted" aria-live="polite">${escape(notionStatusText)}</p>${fullSync ? '' : `<button class="xcb-console-notion-rebuild xcb-console-text-button">${escape(t('notionRebuild'))}</button>`}</div></section><p class="xcb-console-status" aria-live="polite"></p></div>`;
+        panel = `<div class="xcb-console-panel"><div class="xcb-console-note-add"><input data-data-search value="${escape(dataQuery)}" placeholder="${escape(t('searchAll'))}"><button class="xcb-console-data-search">${escape(t('search'))}</button></div>${query ? `<section class="xcb-console-data-section"><h3>${escape(t('search'))}</h3><div class="xcb-console-search-results">${resultRows || `<p class="xcb-console-empty">${escape(t('noSearchResults'))}</p>`}</div></section>` : ''}<section class="xcb-console-data-section"><h3>${escape(t('branches'))}</h3><div class="xcb-console-list">${branchRows || `<p class="xcb-console-empty">${escape(t('noBranches'))}</p>`}</div>${selectedBranch ? `<div class="xcb-console-list">${branchMessages}</div>` : ''}</section><section class="xcb-console-data-section"><h3>${escape(t('exportData'))}</h3><div class="xcb-console-data-actions"><button class="xcb-console-copy-markdown">${escape(t('copyMarkdown'))}</button><button class="xcb-console-download-markdown primary">${escape(t('downloadMarkdown'))}</button></div></section><section class="xcb-console-data-section xcb-console-notion"><div class="xcb-console-section-heading"><h3>${escape(t('notionBackup'))}</h3><a href="${NOTION_HOME_URL}" target="_blank" rel="noopener noreferrer">${escape(t('notionOpen'))}</a></div><details class="xcb-console-connection" ${notionConfigured ? '' : 'open'}><summary><span>${escape(t('notionConnection'))}</span><span class="xcb-console-connection-state">${escape(t(notionConfigured ? 'notionConnected' : 'notionNotConnected'))}</span></summary><div class="xcb-console-connection-fields"><label class="xcb-console-field"><span>${escape(t('notionEndpoint'))}</span><input data-setting="notion-endpoint" type="url" inputmode="url" value="${escape(settings.notionEndpoint || '')}" placeholder="${escape(t('notionEndpointPlaceholder'))}"></label><label class="xcb-console-field"><span>${escape(t('notionSecret'))}</span><input data-setting="notion-secret" type="password" autocomplete="off" placeholder="${escape(sessionNotionSecret ? t('apiConfigured') : t('notionSecretPlaceholder'))}"></label><label class="xcb-console-toggle"><span>${escape(t('notionRemember'))}</span><input data-setting="remember-notion-secret" type="checkbox" ${settings.rememberNotionSecret ? 'checked' : ''}></label><p class="xcb-console-muted">${escape(t('notionWarning'))}</p></div></details><p class="xcb-console-sync-kind">${escape(syncHint)}<br>${escape(t('notionRestoreHint'))}</p>${collapsedLegacy ? `<p class="xcb-console-muted">${escape(t('notionLegacyHidden', collapsedLegacy))}</p>` : ''}<p class="xcb-console-muted"><strong>${escape(pendingSummary)}</strong></p><div class="xcb-console-data-actions"><button class="xcb-console-notion-sync primary">${escape(syncLabel)}</button><button class="xcb-console-notion-pull">${escape(t('notionRestore'))}</button><button class="xcb-console-notion-export">${escape(t('notionExportJson'))}</button></div><div class="xcb-console-sync-state"><p class="xcb-console-notion-status xcb-console-muted" aria-live="polite">${escape(notionStatusText)}</p>${fullSync ? '' : `<button class="xcb-console-notion-rebuild xcb-console-text-button">${escape(t('notionRebuild'))}</button>`}</div></section><p class="xcb-console-status" aria-live="polite"></p></div>`;
       }
       if (tab === 'api') {
         const countOptions = value => [0, 1, 2, 3].map(number => `<option value="${number}" ${Number(value) === number ? 'selected' : ''}>${number === 0 ? escape(t('none')) : escape(t('messages', number))}</option>`).join('');
@@ -1521,6 +1917,7 @@
           note: true,
           noteText: text,
           manualEntry: true,
+          conversationId: location.pathname,
           savedAt: new Date().toISOString(),
           updatedAt: new Date().toISOString()
         };
@@ -1632,6 +2029,37 @@
         }
       });
       overlay.querySelector('.xcb-console-download-markdown')?.addEventListener('click', downloadMarkdown);
+      overlay.querySelector('.xcb-console-notion-pull')?.addEventListener('click', async event => {
+        const button = event.currentTarget;
+        capture();
+        button.disabled = true;
+        button.textContent = t('notionPulling');
+        try {
+          const pulled = await pullNotionBackup();
+          const preview = notionMergePreview(pulled.records);
+          const totals = preview.totals;
+          if (!totals.added && !totals.updated && !totals.conflicts) {
+            settings.notionLastPullAt = new Date().toISOString();
+            settings.notionLastPullCount = preview.records.length;
+            saveSettings();
+            notionNotice = t('notionPullNoChanges');
+          } else if (confirm(t('notionPullConfirm', totals.added, totals.updated, totals.conflicts, totals.unchanged))) {
+            const merged = applyNotionMerge(preview.records);
+            settings.notionLastPullAt = new Date().toISOString();
+            settings.notionLastPullCount = preview.records.length;
+            saveSettings();
+            notionNotice = t('notionPullResult', merged.added, merged.updated, merged.conflicts);
+            if (pulled.incomplete) notionNotice += `\n${t('notionPullIncomplete')}`;
+            refreshVisible();
+          } else {
+            notionNotice = t('notionPullCancelled');
+          }
+        } catch (error) {
+          notionNotice = t('notionPullFailed', error?.message || String(error));
+        } finally {
+          render();
+        }
+      });
       overlay.querySelector('.xcb-console-notion-export')?.addEventListener('click', event => {
         downloadNotionBackup();
         event.currentTarget.textContent = t('notionJsonDownloaded');
@@ -1896,6 +2324,7 @@
     };
   });
   window.__xcbConsoleNotionPayload = () => notionBackupPayload();
+  window.__xcbConsolePreviewNotionImport = records => notionMergePreview(records).totals;
   window.__xcbConsoleVersion = VERSION;
   window.__xcbConsoleLastVersion = VERSION;
   window.__xcbConsoleFactoryReset = () => {
@@ -1931,6 +2360,7 @@
 
     delete window.__xcbConsoleDebug;
     delete window.__xcbConsoleNotionPayload;
+    delete window.__xcbConsolePreviewNotionImport;
     delete window.__xcbConsoleVersion;
     delete window.__xcbConsoleCleanup;
     window.__xcbConsoleRestoreExtension = () => {
