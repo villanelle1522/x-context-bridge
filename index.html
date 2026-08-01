@@ -155,7 +155,7 @@
     copyButton.disabled = true;
     copyStatus.textContent = copyMessages[pageLanguage].reading;
     try {
-      const response = await fetch('CONSOLE_TEST.js?version=0.8.2-test', { cache: 'no-store' });
+      const response = await fetch('CONSOLE_TEST.js?version=0.8.3-test', { cache: 'no-store' });
       if (!response.ok) throw new Error('HTTP ' + response.status);
       const source = await response.text();
       await navigator.clipboard.writeText(source);

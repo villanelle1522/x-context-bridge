@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         X Context Bridge
 // @namespace    https://github.com/villanelle1522/x-context-bridge
-// @version      0.8.2-test
-// @description  X 私訊翻譯、待做、人物筆記、單字本、搜尋與 Notion 跨裝置同步
+// @version      0.8.3-test
+// @description  X 私訊翻譯、待做、筆記、單字本、搜尋與 Notion 跨裝置同步
 // @match        https://x.com/messages*
 // @match        https://x.com/messages/*
 // @match        https://twitter.com/messages*
@@ -22,7 +22,7 @@
  Remove it with: window.__xcbConsoleCleanup()
 */
 (() => {
-  const VERSION = '0.8.2-test';
+  const VERSION = '0.8.3-test';
   const NOTION_SYNC_EPOCH = 2;
   const STYLE_ID = 'xcb-console-style';
   const PAUSE_STYLE_ID = 'xcb-test-clean-style';
@@ -103,7 +103,7 @@
   }
   const UI = {
     zh: {
-      translation: '翻譯', todo: '待做', personNote: '人物筆記', vocabulary: '單字本', data: '搜尋／備份', api: 'API',
+      translation: '翻譯', todo: '待做', personNote: '筆記', vocabulary: '單字本', data: '搜尋／備份', api: 'API',
       autoTranslation: '自動顯示翻譯', direction: '翻譯方向',
       koZh: '한국어 → 繁體中文', zhKo: '繁體中文 → 한국어',
       sourceHint: '只翻譯符合來源語言的訊息。手機使用右側書籤入口。',
@@ -115,19 +115,20 @@
       copy: '複製', copied: '已複製', copyFailed: '複製失敗',
       todoTitle: '待做標題', todoTitlePlaceholder: '例如：看《Bojack Horseman》',
       translationExcerpt: '譯文摘錄', excerptPlaceholder: '留白時會自動翻譯摘錄',
-      originalExcerpt: '原文摘錄', noteField: '人物筆記',
+      originalExcerpt: '原文摘錄', noteField: '筆記',
       notePlaceholder: '例如：她喜歡黑色幽默動畫',
       organizeHint: '按完成後直接保存到目前選擇的區域；可在清單中移除。',
       link: '串聯', branchTitle: '訊息分支', branchPlaceholder: '例如：關於見面的問題',
       tags: '標籤', tagsPlaceholder: '#問題 #書籍 #待回',
       linkHint: '輸入新名稱可建立分支；輸入既有名稱可把這則訊息加入該分支。標籤只保存在 Context Bridge。',
       linkedBranches: '已加入的分支', removeFromBranch: '從分支移除',
-      cancel: '取消', done: '完成', removeTodo: '從待做移除', removeNote: '刪除人物筆記',
+      cancel: '取消', done: '完成', removeTodo: '從待做移除', removeNote: '刪除筆記',
       noTodo: '尚無待做項目。從訊息的「整理」頁保存即可。',
-      noNote: '尚無人物筆記。可直接輸入一行，或從訊息的「整理」頁保存。',
+      noNote: '尚無筆記。可直接輸入一行，或從訊息的「整理」頁保存。',
       waitingExcerpt: '等待翻譯摘錄…', originalPrefix: '原文：', addNote: '新增',
-      addNotePlaceholder: '直接新增人物筆記…', manualNote: '手動新增',
-      messageNotLoaded: '這則訊息目前未載入，請先往上捲到附近。',
+      addNotePlaceholder: '直接新增筆記…', manualNote: '手動新增',
+      messageSearching: progress => `正在自動載入舊訊息… ${progress}%`,
+      messageNotLoaded: '自動搜尋後仍找不到。訊息可能已被刪除，或 X 尚未提供更早記錄。',
       searchAll: '搜尋原文、譯文、筆記、標籤與分支…',
       search: '搜尋', clear: '清除', noSearchResults: '找不到相符資料。',
       branches: '訊息分支', noBranches: '尚無訊息分支。',
@@ -146,6 +147,7 @@
       vocabularyRequired: '請至少填寫單字與意思。', vocabularyDelete: '刪除單字',
       vocabularyDeleteConfirm: '刪除這個單字？', vocabularyEdit: '編輯單字',
       vocabularyCount: count => `${count} 個單字`,
+      copyOrganized: '複製整理', organizedCopied: '整理內容已複製', organizedEmpty: '沒有可複製的內容',
       exportData: 'Obsidian Markdown', copyMarkdown: '複製 Markdown',
       downloadMarkdown: '下載 .md', markdownCopied: 'Markdown 已複製',
       notionBackup: 'Notion 跨裝置同步', notionOpen: '開啟 Notion',
@@ -168,7 +170,7 @@
       notionRebuild: '重新完整比對', notionRebuildConfirm: '下次備份會重新比對全部本機資料，但不會刪除 Notion 內容。要繼續嗎？',
       notionMissing: '請先填入同步閘道網址與同步密碼。',
       notionBadEndpoint: '同步閘道必須使用 HTTPS 網址。',
-      notionReady: '尚未完成首次備份。確認連線後，會完整備份目前的翻譯、待做、人物筆記、保留的引用內容、單字與訊息分支。',
+      notionReady: '尚未完成首次備份。確認連線後，會完整備份目前的翻譯、待做、筆記、保留的引用內容、單字與訊息分支。',
       notionFullHint: '這次會完整比對本機資料；不會刪除 Notion 內容。',
       notionChangesHint: '只同步上次備份後新增或修改的資料。',
       notionNoChanges: '目前沒有需要同步的新變更。',
@@ -197,10 +199,10 @@
       openaiInvalid: 'OpenAI 沒有回傳有效譯文。',
       openaiUserscriptRequired: 'X 的安全政策阻擋 OpenAI 連線。請改用 GitHub Pages 提供的 Userscript 安裝版。',
       googleInvalid: 'Google 沒有回傳有效譯文', googleFailed: message => `Google 初譯失敗：${message}`,
-      factoryConfirm: '清除 X Context Bridge 的所有測試譯文、待做、人物筆記、單字本、設定、API Key 與同步密碼？此動作無法復原。'
+      factoryConfirm: '清除 X Context Bridge 的所有測試譯文、待做、筆記、單字本、設定、API Key 與同步密碼？此動作無法復原。'
     },
     ko: {
-      translation: '번역', todo: '할 일', personNote: '인물 메모', vocabulary: '단어장', data: '검색·백업', api: 'API',
+      translation: '번역', todo: '할 일', personNote: '메모', vocabulary: '단어장', data: '검색·백업', api: 'API',
       autoTranslation: '번역 자동 표시', direction: '번역 방향',
       koZh: '한국어 → 繁體中文', zhKo: '繁體中文 → 한국어',
       sourceHint: '현재 원문 언어와 일치하는 메시지만 번역합니다. 모바일에서는 오른쪽 북마크 버튼을 사용하세요.',
@@ -212,19 +214,20 @@
       copy: '복사', copied: '복사됨', copyFailed: '복사 실패',
       todoTitle: '할 일 제목', todoTitlePlaceholder: '예: 《Bojack Horseman》 보기',
       translationExcerpt: '번역 발췌', excerptPlaceholder: '비워 두면 발췌문을 자동 번역합니다',
-      originalExcerpt: '원문 발췌', noteField: '인물 메모',
+      originalExcerpt: '원문 발췌', noteField: '메모',
       notePlaceholder: '예: 블랙 코미디 애니메이션을 좋아함',
       organizeHint: '완료를 누르면 선택한 영역에 바로 저장됩니다. 목록에서 삭제할 수 있습니다.',
       link: '연결', branchTitle: '메시지 분기', branchPlaceholder: '예: 만남에 관한 질문',
       tags: '태그', tagsPlaceholder: '#질문 #책 #답장',
       linkHint: '새 이름을 입력하면 분기를 만들고, 기존 이름을 입력하면 이 메시지를 해당 분기에 추가합니다. 태그는 Context Bridge에만 저장됩니다.',
       linkedBranches: '연결된 분기', removeFromBranch: '분기에서 제거',
-      cancel: '취소', done: '완료', removeTodo: '할 일에서 삭제', removeNote: '인물 메모 삭제',
+      cancel: '취소', done: '완료', removeTodo: '할 일에서 삭제', removeNote: '메모 삭제',
       noTodo: '저장된 할 일이 없습니다. 메시지의 ‘정리’에서 추가하세요.',
-      noNote: '저장된 인물 메모가 없습니다. 한 줄로 바로 추가하거나 메시지의 ‘정리’에서 저장하세요.',
+      noNote: '저장된 메모가 없습니다. 한 줄로 바로 추가하거나 메시지의 ‘정리’에서 저장하세요.',
       waitingExcerpt: '발췌문 번역 대기 중…', originalPrefix: '원문: ', addNote: '추가',
-      addNotePlaceholder: '인물 메모를 바로 추가…', manualNote: '직접 추가',
-      messageNotLoaded: '현재 화면에 없는 메시지입니다. 위로 스크롤해 불러온 뒤 다시 시도하세요.',
+      addNotePlaceholder: '메모를 바로 추가…', manualNote: '직접 추가',
+      messageSearching: progress => `이전 메시지를 자동으로 불러오는 중… ${progress}%`,
+      messageNotLoaded: '자동 검색 후에도 찾을 수 없습니다. 메시지가 삭제되었거나 X에서 이전 기록을 아직 제공하지 않았을 수 있습니다.',
       searchAll: '원문·번역·메모·태그·분기 검색…',
       search: '검색', clear: '지우기', noSearchResults: '일치하는 데이터가 없습니다.',
       branches: '메시지 분기', noBranches: '메시지 분기가 없습니다.',
@@ -243,6 +246,7 @@
       vocabularyRequired: '단어와 뜻을 입력하세요.', vocabularyDelete: '단어 삭제',
       vocabularyDeleteConfirm: '이 단어를 삭제할까요?', vocabularyEdit: '단어 편집',
       vocabularyCount: count => `단어 ${count}개`,
+      copyOrganized: '정리 내용 복사', organizedCopied: '정리 내용 복사됨', organizedEmpty: '복사할 내용이 없습니다',
       exportData: 'Obsidian Markdown', copyMarkdown: 'Markdown 복사',
       downloadMarkdown: '.md 다운로드', markdownCopied: 'Markdown 복사됨',
       notionBackup: 'Notion 기기 간 동기화', notionOpen: 'Notion 열기',
@@ -265,7 +269,7 @@
       notionRebuild: '전체 다시 비교', notionRebuildConfirm: '다음 백업에서 로컬 데이터를 전부 다시 비교합니다. Notion 내용은 삭제하지 않습니다. 계속할까요?',
       notionMissing: '동기화 게이트웨이 주소와 비밀번호를 입력하세요.',
       notionBadEndpoint: '동기화 게이트웨이는 HTTPS 주소여야 합니다.',
-      notionReady: '아직 첫 백업을 완료하지 않았습니다. 연결 후 번역, 할 일, 인물 메모, 보존된 인용 내용, 단어와 메시지 분기를 전체 백업합니다.',
+      notionReady: '아직 첫 백업을 완료하지 않았습니다. 연결 후 번역, 할 일, 메모, 보존된 인용 내용, 단어와 메시지 분기를 전체 백업합니다.',
       notionFullHint: '이번에는 로컬 데이터를 전체 비교합니다. Notion 내용은 삭제하지 않습니다.',
       notionChangesHint: '마지막 백업 뒤에 새로 생기거나 수정된 데이터만 동기화합니다.',
       notionNoChanges: '지금 동기화할 새 변경 사항이 없습니다.',
@@ -294,7 +298,7 @@
       openaiInvalid: 'OpenAI가 유효한 번역을 반환하지 않았습니다.',
       openaiUserscriptRequired: 'X의 보안 정책이 OpenAI 연결을 차단했습니다. GitHub Pages에서 제공하는 Userscript 설치판을 사용하세요.',
       googleInvalid: 'Google이 유효한 번역을 반환하지 않았습니다', googleFailed: message => `Google 초벌 번역 실패: ${message}`,
-      factoryConfirm: 'X Context Bridge의 모든 테스트 번역, 할 일, 인물 메모, 단어장, 설정, API 키와 동기화 비밀번호를 삭제할까요? 되돌릴 수 없습니다.'
+      factoryConfirm: 'X Context Bridge의 모든 테스트 번역, 할 일, 메모, 단어장, 설정, API 키와 동기화 비밀번호를 삭제할까요? 되돌릴 수 없습니다.'
     }
   };
   const uiLanguage = () => settings.direction === 'zh-ko' ? 'ko' : 'zh';
@@ -479,6 +483,62 @@
     ...(record.tags || []),
     ...branchesForRecord(record).map(branch => branch.title)
   ].filter(Boolean).join('\n').toLocaleLowerCase();
+  const organizedCopyText = section => {
+    const lines = [];
+    const addDetail = (label, value) => {
+      const text = String(value || '').trim();
+      if (text) lines.push(`  ${label}：${text}`);
+    };
+    if (section === 'todo') {
+      const items = Object.values(state.messages).filter(record => record.todo);
+      if (!items.length) return '';
+      lines.push(`【${t('todo')}】`, '');
+      for (const record of items) {
+        const translation = collectionTranslation(record, 'todo');
+        const title = String(record.todoTitle || translation || record.todoExcerpt || record.text || '').trim();
+        lines.push(`☐ ${title}`);
+        if (translation && translation.trim() !== title) addDetail(t('translationExcerpt'), translation);
+        addDetail(t('originalExcerpt'), record.todoExcerpt || record.text);
+        lines.push('');
+      }
+    }
+    if (section === 'note') {
+      const items = Object.values(state.messages).filter(record => record.note);
+      if (!items.length) return '';
+      lines.push(`【${t('personNote')}】`, '');
+      for (const record of items) {
+        const translation = record.manualEntry ? '' : collectionTranslation(record, 'note');
+        const title = String(record.noteText || translation || record.noteExcerpt || record.text || '').trim();
+        lines.push(`• ${title}`);
+        if (!record.manualEntry) {
+          if (translation && translation.trim() !== title) addDetail(t('translationExcerpt'), translation);
+          addDetail(t('originalExcerpt'), record.noteExcerpt || record.text);
+        }
+        lines.push('');
+      }
+    }
+    if (section === 'vocabulary') {
+      const entries = vocabularyRecords();
+      if (!entries.length) return '';
+      const grouped = new Map();
+      for (const entry of entries) {
+        const topic = vocabularyTopic(entry);
+        if (!grouped.has(topic)) grouped.set(topic, []);
+        grouped.get(topic).push(entry);
+      }
+      lines.push(`【${t('vocabulary')}】`, '');
+      for (const [topic, topicEntries] of [...grouped.entries()].sort(([a], [b]) => a.localeCompare(b))) {
+        lines.push(`# ${topic}`);
+        for (const entry of topicEntries) {
+          lines.push(`• ${String(entry.word || '').trim()}`);
+          addDetail(t('vocabularyMeaning'), entry.meaning);
+          addDetail(t('vocabularyPronunciation'), entry.pronunciation);
+        }
+        lines.push('');
+      }
+    }
+    return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+  };
   const markdownText = () => {
     const lines = [
       '---',
@@ -514,7 +574,7 @@
     for (const record of records.filter(item => item.todo)) {
       lines.push(`### ${record.todoTitle || record.id}`, '', record.todoExcerptTranslation || activeTranslation(record) || '', '', `> ${record.todoExcerpt || record.text || ''}`, '');
     }
-    lines.push('## 人物筆記', '');
+    lines.push('## 筆記', '');
     for (const record of records.filter(item => item.note)) {
       lines.push(`- ${record.noteText || activeTranslation(record) || record.text || ''}`);
       if (!record.manualEntry && (record.noteExcerpt || record.text)) lines.push(`  - 原文：${record.noteExcerpt || record.text}`);
@@ -1433,7 +1493,7 @@
     .xcb-console-data-section{display:grid;gap:9px;padding-top:4px}.xcb-console-data-section>h3{margin:0;color:#eff3f4;font-size:15px}.xcb-console-data-actions{display:flex;flex-wrap:wrap;gap:8px}.xcb-console-data-actions button{flex:1 1 150px}.xcb-console-search-results{display:grid;gap:8px}.xcb-console-list-item em{color:#8b98a5;font-style:normal;font-size:12px}.xcb-console-branch-row{position:relative}.xcb-console-branch-row>.xcb-console-list-item{padding-right:50px!important}
     .xcb-console-collapsible{border-top:1px solid #2f3336;padding-top:4px}.xcb-console-collapsible>summary{display:flex;align-items:center;gap:8px;min-height:44px;cursor:pointer;list-style:none;color:#eff3f4;font-weight:700}.xcb-console-collapsible>summary::-webkit-details-marker{display:none}.xcb-console-collapsible>summary::after{content:"›";margin-left:auto;color:#8b98a5;font-size:20px;transform:rotate(90deg);transition:transform .18s}.xcb-console-collapsible[open]>summary::after{transform:rotate(-90deg)}.xcb-console-collapsible-count{color:#8b98a5;font-size:12px;font-weight:400}.xcb-console-collapsible-body{display:grid;gap:9px;padding-bottom:4px}
     .xcb-console-vocabulary-editor,.xcb-console-vocabulary-group{overflow:hidden;border:1px solid #2f3336;border-radius:16px;background:#0f1419}.xcb-console-vocabulary-editor>summary,.xcb-console-vocabulary-group>summary{display:flex;align-items:center;gap:9px;min-height:48px;box-sizing:border-box;padding:10px 14px;cursor:pointer;list-style:none;color:#eff3f4}.xcb-console-vocabulary-editor>summary::-webkit-details-marker,.xcb-console-vocabulary-group>summary::-webkit-details-marker{display:none}.xcb-console-vocabulary-editor>summary::after,.xcb-console-vocabulary-group>summary::after{content:"›";margin-left:8px;color:#8b98a5;font-size:22px;line-height:1;transform:rotate(90deg);transition:transform .18s}.xcb-console-vocabulary-editor[open]>summary::after,.xcb-console-vocabulary-group[open]>summary::after{transform:rotate(-90deg)}.xcb-console-vocabulary-editor>summary{font-weight:700}.xcb-console-vocabulary-group>summary strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.xcb-console-vocabulary-group>summary small{margin-left:auto;color:#8b98a5;font-size:12px;white-space:nowrap}.xcb-console-vocabulary-form{display:grid;gap:10px;padding:14px;border-top:1px solid #2f3336;background:#000}.xcb-console-vocabulary-form textarea{width:100%;min-height:78px;box-sizing:border-box;padding:9px 11px;resize:vertical;border:1px solid #536471;border-radius:12px;color:#eff3f4;background:#0f1419;font:inherit}.xcb-console-vocabulary-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.xcb-console-vocabulary-groups{display:grid;gap:9px}.xcb-console-vocabulary-group-list{border-top:1px solid #2f3336}.xcb-console-vocabulary-group-list .xcb-console-list-row:not(:last-child){border-bottom:1px solid #202327}.xcb-console-vocabulary-card{border:0!important;border-radius:0!important;background:transparent!important;padding:12px 50px 12px 14px!important}.xcb-console-vocabulary-card:hover{background:#16181c!important}.xcb-console-vocabulary-wordline{display:flex;align-items:baseline;gap:8px;min-width:0}.xcb-console-vocabulary-wordline strong{overflow:visible;white-space:normal;font-size:16px}.xcb-console-vocabulary-card .xcb-console-vocabulary-pronunciation{color:#8b98a5;font-size:13px}.xcb-console-vocabulary-meaning{color:#eff3f4;line-height:1.45}.xcb-console-vocabulary-group-list .xcb-console-list-remove{top:50%;transform:translateY(-50%)}
-    .xcb-console-section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.xcb-console-section-heading h3{margin:0;color:#eff3f4;font-size:15px}.xcb-console-section-heading a{color:#1d9bf0;font-size:13px;text-decoration:none}.xcb-console-notion{margin-top:4px;padding:14px;border:1px solid #2f3336;border-radius:16px;background:#0f1419}.xcb-console-panel button:disabled{cursor:wait;opacity:.65}
+    .xcb-console-section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.xcb-console-section-heading h3{margin:0;color:#eff3f4;font-size:15px}.xcb-console-section-heading a{color:#1d9bf0;font-size:13px;text-decoration:none}.xcb-console-copy-organized{min-height:36px!important;padding:7px 12px!important;border:1px solid #2f3336!important;color:#1d9bf0!important;background:transparent!important;font-size:13px!important}.xcb-console-notion{margin-top:4px;padding:14px;border:1px solid #2f3336;border-radius:16px;background:#0f1419}.xcb-console-panel button:disabled{cursor:wait;opacity:.65}
     .xcb-console-connection{border:1px solid #2f3336;border-radius:14px;background:#000}.xcb-console-connection>summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px;box-sizing:border-box;padding:9px 12px;cursor:pointer;list-style:none;font-weight:600}.xcb-console-connection>summary::-webkit-details-marker{display:none}.xcb-console-connection>summary::after{content:"›";margin-left:auto;color:#8b98a5;font-size:22px;line-height:1;transform:rotate(90deg);transition:transform .18s}.xcb-console-connection[open]>summary::after{transform:rotate(-90deg)}.xcb-console-connection-state{margin-left:auto;color:#8b98a5;font-size:12px;font-weight:400}.xcb-console-connection-fields{display:grid;gap:12px;padding:4px 12px 12px;border-top:1px solid #2f3336}.xcb-console-sync-state{display:flex;align-items:center;justify-content:space-between;gap:10px}.xcb-console-sync-state .xcb-console-notion-status{margin:0;white-space:pre-line}.xcb-console-text-button{min-height:32px!important;padding:4px 8px!important;color:#1d9bf0!important;background:transparent!important;font-size:12px!important;white-space:nowrap}.xcb-console-sync-kind{margin:0;padding:9px 11px;border-radius:12px;color:#b6c2cb;background:#16181c;font-size:13px}
     .xcb-console-master{margin-right:auto!important;border:1px solid #f4212e!important;color:#ff8a91!important;background:#20090c!important;font-weight:700!important}
     .xcb-console-master:hover{color:#fff!important;background:#3a0b10!important}
@@ -1879,15 +1939,78 @@
       tab = 'vocabulary';
       render();
     };
-    const jumpToRecord = (record, status) => {
+    const findRecordTarget = record => {
       const testIds = [record.nativeTestId, ...(record.quotedBy || []).map(item => item.nativeTestId)].filter(Boolean);
-      const target = [...document.querySelectorAll(selector)].find(el => testIds.includes(el.getAttribute('data-testid')));
-      if (!target) {
+      return [...document.querySelectorAll(selector)].find(el => testIds.includes(el.getAttribute('data-testid'))) || null;
+    };
+    const conversationScroller = () => {
+      const panel = document.querySelector('[data-testid="dm-conversation-panel"]') || document.querySelector('[data-testid="dm-container"]');
+      if (!panel) return null;
+      const isScrollable = element => {
+        if (!(element instanceof HTMLElement) || element.scrollHeight <= element.clientHeight + 40) return false;
+        const overflow = getComputedStyle(element).overflowY;
+        return /auto|scroll|overlay/.test(overflow);
+      };
+      const visibleMessage = panel.querySelector(selector);
+      let ancestor = visibleMessage?.parentElement || null;
+      while (ancestor && ancestor !== document.body) {
+        if (isScrollable(ancestor)) return ancestor;
+        if (ancestor === panel) break;
+        ancestor = ancestor.parentElement;
+      }
+      if (isScrollable(panel)) return panel;
+      return [...panel.querySelectorAll('*')]
+        .filter(isScrollable)
+        .sort((a, b) => (b.scrollHeight - b.clientHeight) - (a.scrollHeight - a.clientHeight))[0] || null;
+    };
+    const waitForHistory = delay => new Promise(resolve => setTimeout(resolve, delay));
+    const jumpToRecord = async (record, status, button) => {
+      if (!record || button?.dataset.xcbSearching === 'true') return;
+      let target = findRecordTarget(record);
+      if (target) {
+        overlay.remove();
+        requestAnimationFrame(() => target.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+        return;
+      }
+      const scroller = conversationScroller();
+      if (!scroller) {
         status.textContent = t('messageNotLoaded');
         return;
       }
-      target.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      overlay.remove();
+      const initialTop = scroller.scrollTop;
+      const maxAttempts = 36;
+      let unchanged = 0;
+      let lastTop = scroller.scrollTop;
+      let lastHeight = scroller.scrollHeight;
+      if (button) {
+        button.dataset.xcbSearching = 'true';
+        button.disabled = true;
+      }
+      for (let attempt = 1; attempt <= maxAttempts && overlay.isConnected; attempt += 1) {
+        status.textContent = t('messageSearching', Math.round((attempt / maxAttempts) * 100));
+        const step = Math.max(360, Math.round(scroller.clientHeight * 0.78));
+        scroller.scrollTop = Math.max(0, scroller.scrollTop - step);
+        await waitForHistory(360);
+        target = findRecordTarget(record);
+        if (target) {
+          overlay.remove();
+          requestAnimationFrame(() => target.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+          return;
+        }
+        const samePosition = Math.abs(scroller.scrollTop - lastTop) < 2;
+        const sameHeight = Math.abs(scroller.scrollHeight - lastHeight) < 2;
+        unchanged = samePosition && sameHeight ? unchanged + 1 : 0;
+        lastTop = scroller.scrollTop;
+        lastHeight = scroller.scrollHeight;
+        if (scroller.scrollTop <= 1 && unchanged >= 3) break;
+      }
+      if (!overlay.isConnected) return;
+      scroller.scrollTop = initialTop;
+      status.textContent = t('messageNotLoaded');
+      if (button) {
+        delete button.dataset.xcbSearching;
+        button.disabled = false;
+      }
     };
     const capture = () => {
       if (tab === 'translation') {
@@ -1945,7 +2068,7 @@
           const title = record.todoTitle || translation.slice(0, 60);
           return `<div class="xcb-console-list-row"><button class="xcb-console-list-item" data-record="${escape(record.id)}"><strong>${escape(title)}</strong><span>${escape(translation)}</span><small>${escape(t('originalPrefix'))}${escape(original)}</small></button><button class="xcb-console-list-remove" data-remove-todo="${escape(record.id)}" aria-label="${escape(t('removeTodo'))}" title="${escape(t('removeTodo'))}">×</button></div>`;
         }).join('');
-        panel = `<div class="xcb-console-panel"><div class="xcb-console-list">${rows || `<p class="xcb-console-empty">${escape(t('noTodo'))}</p>`}</div><p class="xcb-console-status" aria-live="polite"></p></div>`;
+        panel = `<div class="xcb-console-panel"><div class="xcb-console-section-heading"><h3>${escape(t('todo'))}</h3><button class="xcb-console-copy-organized" data-copy-organized="todo">${escape(t('copyOrganized'))}</button></div><div class="xcb-console-list">${rows || `<p class="xcb-console-empty">${escape(t('noTodo'))}</p>`}</div><p class="xcb-console-status" aria-live="polite"></p></div>`;
       }
       if (tab === 'note') {
         const items = records().filter(record => record.note);
@@ -1960,7 +2083,7 @@
           const jumpAttribute = record.manualEntry ? '' : ` data-record="${escape(record.id)}"`;
           return `<div class="xcb-console-list-row"><${mainTag} class="xcb-console-list-item"${jumpAttribute}><strong>${escape(title)}</strong>${details}</${mainTag}><button class="xcb-console-list-remove" data-remove-note="${escape(record.id)}" aria-label="${escape(t('removeNote'))}" title="${escape(t('removeNote'))}">×</button></div>`;
         }).join('');
-        panel = `<div class="xcb-console-panel"><div class="xcb-console-note-add"><input data-new-note placeholder="${escape(t('addNotePlaceholder'))}"><button class="xcb-console-add-note">${escape(t('addNote'))}</button></div><div class="xcb-console-list">${rows || `<p class="xcb-console-empty">${escape(t('noNote'))}</p>`}</div><p class="xcb-console-status" aria-live="polite"></p></div>`;
+        panel = `<div class="xcb-console-panel"><div class="xcb-console-section-heading"><h3>${escape(t('personNote'))}</h3><button class="xcb-console-copy-organized" data-copy-organized="note">${escape(t('copyOrganized'))}</button></div><div class="xcb-console-note-add"><input data-new-note placeholder="${escape(t('addNotePlaceholder'))}"><button class="xcb-console-add-note">${escape(t('addNote'))}</button></div><div class="xcb-console-list">${rows || `<p class="xcb-console-empty">${escape(t('noNote'))}</p>`}</div><p class="xcb-console-status" aria-live="polite"></p></div>`;
       }
       if (tab === 'vocabulary') {
         const allVocabulary = vocabularyRecords();
@@ -1979,7 +2102,7 @@
         const editorHeading = editingVocabularyId
           ? t('vocabularyEditHeading', vocabularyDraft.word || t('vocabularyWord'))
           : t('vocabularyNew');
-        panel = `<div class="xcb-console-panel"><details class="xcb-console-vocabulary-editor" data-vocabulary-editor ${vocabularyFormOpen ? 'open' : ''}><summary>${escape(editorHeading)}</summary><div class="xcb-console-vocabulary-form"><div class="xcb-console-vocabulary-grid"><label class="xcb-console-field"><span>${escape(t('vocabularyWord'))}</span><input data-vocabulary-word value="${escape(vocabularyDraft.word)}" placeholder="${escape(t('vocabularyWordPlaceholder'))}"></label><label class="xcb-console-field"><span>${escape(t('vocabularyPronunciation'))}</span><input data-vocabulary-pronunciation value="${escape(vocabularyDraft.pronunciation)}" placeholder="${escape(t('vocabularyPronunciationPlaceholder'))}"></label></div><label class="xcb-console-field"><span>${escape(t('vocabularyMeaning'))}</span><textarea data-vocabulary-meaning placeholder="${escape(t('vocabularyMeaningPlaceholder'))}">${escape(vocabularyDraft.meaning)}</textarea></label><label class="xcb-console-field"><span>${escape(t('vocabularyTopic'))}</span><input data-vocabulary-topic value="${escape(vocabularyDraft.topic)}" placeholder="${escape(t('vocabularyTopicPlaceholder'))}"></label><div class="xcb-console-data-actions"><button class="xcb-console-vocabulary-save primary">${escape(t(editingVocabularyId ? 'vocabularyUpdate' : 'vocabularyAdd'))}</button>${editingVocabularyId ? `<button class="xcb-console-vocabulary-cancel">${escape(t('vocabularyCancelEdit'))}</button>` : ''}</div><p class="xcb-console-vocabulary-status xcb-console-muted" aria-live="polite"></p></div></details><div class="xcb-console-section-heading"><h3>${escape(t('vocabularyCount', allVocabulary.length))}</h3></div><div class="xcb-console-vocabulary-groups">${vocabularyGroups || `<p class="xcb-console-empty">${escape(t('vocabularyEmpty'))}</p>`}</div></div>`;
+        panel = `<div class="xcb-console-panel"><details class="xcb-console-vocabulary-editor" data-vocabulary-editor ${vocabularyFormOpen ? 'open' : ''}><summary>${escape(editorHeading)}</summary><div class="xcb-console-vocabulary-form"><div class="xcb-console-vocabulary-grid"><label class="xcb-console-field"><span>${escape(t('vocabularyWord'))}</span><input data-vocabulary-word value="${escape(vocabularyDraft.word)}" placeholder="${escape(t('vocabularyWordPlaceholder'))}"></label><label class="xcb-console-field"><span>${escape(t('vocabularyPronunciation'))}</span><input data-vocabulary-pronunciation value="${escape(vocabularyDraft.pronunciation)}" placeholder="${escape(t('vocabularyPronunciationPlaceholder'))}"></label></div><label class="xcb-console-field"><span>${escape(t('vocabularyMeaning'))}</span><textarea data-vocabulary-meaning placeholder="${escape(t('vocabularyMeaningPlaceholder'))}">${escape(vocabularyDraft.meaning)}</textarea></label><label class="xcb-console-field"><span>${escape(t('vocabularyTopic'))}</span><input data-vocabulary-topic value="${escape(vocabularyDraft.topic)}" placeholder="${escape(t('vocabularyTopicPlaceholder'))}"></label><div class="xcb-console-data-actions"><button class="xcb-console-vocabulary-save primary">${escape(t(editingVocabularyId ? 'vocabularyUpdate' : 'vocabularyAdd'))}</button>${editingVocabularyId ? `<button class="xcb-console-vocabulary-cancel">${escape(t('vocabularyCancelEdit'))}</button>` : ''}</div><p class="xcb-console-vocabulary-status xcb-console-muted" aria-live="polite"></p></div></details><div class="xcb-console-section-heading"><h3>${escape(t('vocabularyCount', allVocabulary.length))}</h3><button class="xcb-console-copy-organized" data-copy-organized="vocabulary">${escape(t('copyOrganized'))}</button></div><div class="xcb-console-vocabulary-groups">${vocabularyGroups || `<p class="xcb-console-empty">${escape(t('vocabularyEmpty'))}</p>`}</div></div>`;
       }
       if (tab === 'data') {
         const allRecords = records();
@@ -2054,7 +2177,20 @@
       overlay.querySelector('.xcb-console-cancel').onclick = () => overlay.remove();
       overlay.querySelector('.xcb-console-done').onclick = () => { capture(); refreshVisible(); overlay.remove(); };
       const status = overlay.querySelector('.xcb-console-status');
-      overlay.querySelectorAll('[data-record]').forEach(button => button.onclick = () => jumpToRecord(state.messages[button.dataset.record], status));
+      overlay.querySelectorAll('[data-copy-organized]').forEach(button => button.onclick = async () => {
+        const text = organizedCopyText(button.dataset.copyOrganized);
+        if (!text) {
+          button.textContent = t('organizedEmpty');
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(text);
+          button.textContent = t('organizedCopied');
+        } catch {
+          button.textContent = t('copyFailed');
+        }
+      });
+      overlay.querySelectorAll('[data-record]').forEach(button => button.onclick = () => jumpToRecord(state.messages[button.dataset.record], status, button));
       const addNote = () => {
         const input = overlay.querySelector('[data-new-note]');
         const text = input?.value.trim() || '';
@@ -2476,6 +2612,7 @@
   });
   window.__xcbConsoleNotionPayload = () => notionBackupPayload();
   window.__xcbConsolePreviewNotionImport = records => notionMergePreview(records).totals;
+  window.__xcbConsoleOrganizedText = section => organizedCopyText(section);
   window.__xcbConsoleVersion = VERSION;
   window.__xcbConsoleLastVersion = VERSION;
   window.__xcbConsoleFactoryReset = () => {
@@ -2512,6 +2649,7 @@
     delete window.__xcbConsoleDebug;
     delete window.__xcbConsoleNotionPayload;
     delete window.__xcbConsolePreviewNotionImport;
+    delete window.__xcbConsoleOrganizedText;
     delete window.__xcbConsoleVersion;
     delete window.__xcbConsoleCleanup;
     window.__xcbConsoleRestoreExtension = () => {
