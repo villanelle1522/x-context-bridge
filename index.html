@@ -13,6 +13,9 @@
   h2{margin:0 0 8px;font-size:21px}
   p{margin:8px 0}
   .lead{font-size:18px;color:#cfd9de}
+  .language-switch{display:flex;justify-content:flex-end;gap:4px;margin-bottom:18px}
+  .language-switch button{min-height:38px;padding:7px 13px;border:1px solid #536471;border-radius:999px;color:#8b98a5;background:transparent;font:inherit;cursor:pointer}
+  .language-switch button[aria-pressed="true"]{border-color:#1d9bf0;color:#fff;background:#1d9bf0;font-weight:700}
   .notice{margin:22px 0;padding:14px 16px;border-left:4px solid #f4212e;border-radius:10px;background:#250b0e}
   .grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:20px 0}
   .card{display:flex;flex-direction:column;padding:18px;border:1px solid #2f3336;border-radius:16px;background:#000}
@@ -37,90 +40,128 @@
   }
 </style>
 <main>
+  <nav class="language-switch" aria-label="Language / 언어">
+    <button type="button" data-language="zh" aria-pressed="true">繁體中文</button>
+    <button type="button" data-language="ko" aria-pressed="false">한국어</button>
+  </nav>
   <h1>X Context Bridge</h1>
-  <p class="lead">免費安裝到電腦、Android 與 iPhone。安裝一次，以後開啟 X 網頁版私訊就會自動執行。</p>
+  <p class="lead" data-zh="免費安裝到電腦、Android 與 iPhone。安裝一次，以後開啟 X 網頁版私訊就會自動執行。" data-ko="컴퓨터, Android, iPhone에 무료로 설치하세요. 한 번 설치하면 X 웹사이트의 쪽지를 열 때 자동으로 실행됩니다.">免費安裝到電腦、Android 與 iPhone。安裝一次，以後開啟 X 網頁版私訊就會自動執行。</p>
 
   <div class="notice">
-    <strong>書籤短版已停止推薦。</strong>
-    實測確認 X 會以強制 CSP 阻擋從 GitHub Pages 載入外部程式；離線完整版又超過許多手機的書籤長度。Userscript 是目前可靠且免費的方式。
+    <strong data-zh="書籤短版已停止推薦。" data-ko="짧은 북마클릿은 더 이상 권장하지 않습니다.">書籤短版已停止推薦。</strong>
+    <span data-zh="實測確認 X 會以強制 CSP 阻擋從 GitHub Pages 載入外部程式；離線完整版又超過許多手機的書籤長度。Userscript 是目前可靠且免費的方式。" data-ko="X의 CSP가 GitHub Pages의 외부 스크립트를 차단하고, 오프라인 전체판은 많은 휴대폰의 북마크 길이 제한을 넘습니다. 현재는 Userscript가 안정적이고 무료인 설치 방식입니다.">實測確認 X 會以強制 CSP 阻擋從 GitHub Pages 載入外部程式；離線完整版又超過許多手機的書籤長度。Userscript 是目前可靠且免費的方式。</span>
   </div>
 
   <div class="grid">
     <section class="card" data-platform="desktop">
-      <h2>電腦</h2>
-      <p>Chrome、Edge 或 Firefox 先安裝免費的 Violentmonkey，再安裝 X Context Bridge。</p>
+      <h2 data-zh="電腦" data-ko="컴퓨터">電腦</h2>
+      <p data-zh="Chrome、Edge 或 Firefox 先安裝免費的 Violentmonkey，再安裝 X Context Bridge。" data-ko="Chrome, Edge 또는 Firefox에 무료 Violentmonkey를 설치한 다음 X Context Bridge를 설치하세요.">Chrome、Edge 或 Firefox 先安裝免費的 Violentmonkey，再安裝 X Context Bridge。</p>
       <ol class="steps">
-        <li><a class="text-link" href="https://violentmonkey.github.io/get-it/" target="_blank" rel="noopener noreferrer">安裝 Violentmonkey</a></li>
-        <li>回到本頁安裝腳本</li>
+        <li><a class="text-link" href="https://violentmonkey.github.io/get-it/" target="_blank" rel="noopener noreferrer" data-zh="安裝 Violentmonkey" data-ko="Violentmonkey 설치">安裝 Violentmonkey</a></li>
+        <li data-zh="回到本頁安裝腳本" data-ko="이 페이지로 돌아와 스크립트 설치">回到本頁安裝腳本</li>
       </ol>
-      <div class="actions"><a class="button" href="X_CONTEXT_BRIDGE.user.js">安裝 X Context Bridge</a></div>
+      <div class="actions"><a class="button" href="X_CONTEXT_BRIDGE.user.js" data-zh="安裝 X Context Bridge" data-ko="X Context Bridge 설치">安裝 X Context Bridge</a></div>
     </section>
 
     <section class="card" data-platform="android">
       <h2>Android</h2>
-      <p>手機 Chrome 不支援擴充功能。請使用 Firefox Android 與免費 Violentmonkey。</p>
+      <p data-zh="手機 Chrome 不支援擴充功能。請使用 Firefox Android 與免費 Violentmonkey。" data-ko="모바일 Chrome은 확장 기능을 지원하지 않습니다. Android용 Firefox와 무료 Violentmonkey를 사용하세요.">手機 Chrome 不支援擴充功能。請使用 Firefox Android 與免費 Violentmonkey。</p>
       <ol class="steps">
-        <li><a class="text-link" href="https://addons.mozilla.org/firefox/addon/violentmonkey/" target="_blank" rel="noopener noreferrer">在 Firefox 安裝 Violentmonkey</a></li>
-        <li>用同一個 Firefox 回到本頁</li>
+        <li><a class="text-link" href="https://addons.mozilla.org/firefox/addon/violentmonkey/" target="_blank" rel="noopener noreferrer" data-zh="在 Firefox 安裝 Violentmonkey" data-ko="Firefox에 Violentmonkey 설치">在 Firefox 安裝 Violentmonkey</a></li>
+        <li data-zh="用同一個 Firefox 回到本頁" data-ko="같은 Firefox로 이 페이지 다시 열기">用同一個 Firefox 回到本頁</li>
       </ol>
-      <div class="actions"><a class="button" href="X_CONTEXT_BRIDGE.user.js">安裝 X Context Bridge</a></div>
+      <div class="actions"><a class="button" href="X_CONTEXT_BRIDGE.user.js" data-zh="安裝 X Context Bridge" data-ko="X Context Bridge 설치">安裝 X Context Bridge</a></div>
     </section>
 
     <section class="card" data-platform="ios">
       <h2>iPhone／iPad</h2>
-      <p>安裝免費 Userscripts，並在 Safari 延伸功能中允許它存取 x.com。</p>
+      <p data-zh="安裝免費 Userscripts，並在 Safari 延伸功能中允許它存取 x.com。" data-ko="무료 Userscripts를 설치하고 Safari 확장 기능 설정에서 x.com 접근을 허용하세요.">安裝免費 Userscripts，並在 Safari 延伸功能中允許它存取 x.com。</p>
       <ol class="steps">
-        <li><a class="text-link" href="https://apps.apple.com/tw/app/userscripts/id1463298887" target="_blank" rel="noopener noreferrer">從 App Store 安裝 Userscripts</a></li>
-        <li>用 Safari 回到本頁並開啟 Userscripts</li>
+        <li><a class="text-link" href="https://apps.apple.com/tw/app/userscripts/id1463298887" target="_blank" rel="noopener noreferrer" data-zh="從 App Store 安裝 Userscripts" data-ko="App Store에서 Userscripts 설치">從 App Store 安裝 Userscripts</a></li>
+        <li data-zh="用 Safari 回到本頁並開啟 Userscripts" data-ko="Safari로 이 페이지를 다시 열고 Userscripts 활성화">用 Safari 回到本頁並開啟 Userscripts</li>
       </ol>
-      <div class="actions"><a class="button" href="X_CONTEXT_BRIDGE.user.js">開啟安裝檔</a></div>
+      <div class="actions"><a class="button" href="X_CONTEXT_BRIDGE.user.js" data-zh="開啟安裝檔" data-ko="설치 파일 열기">開啟安裝檔</a></div>
     </section>
   </div>
 
   <section class="panel">
-    <h2>主控台完整版</h2>
-    <p>保留給開發與快速測試。按下按鈕後，到 <code>x.com/messages</code> 的主控台直接貼上整份程式。</p>
-    <button class="button secondary" id="copy-console" type="button">複製主控台完整版</button>
+    <h2 data-zh="主控台完整版" data-ko="콘솔 전체판">主控台完整版</h2>
+    <p><span data-zh="開發與快速測試使用。複製後，到" data-ko="개발 및 빠른 테스트용입니다. 복사한 다음">開發與快速測試使用。複製後，到</span> <code>x.com/messages</code> <span data-zh="的主控台貼上整份程式。" data-ko="페이지의 개발자 콘솔에 전체 코드를 붙여넣으세요.">的主控台貼上整份程式。</span></p>
+    <button class="button secondary" id="copy-console" type="button" data-zh="複製主控台完整版" data-ko="콘솔 전체판 복사">複製主控台完整版</button>
     <p class="status" id="copy-status" role="status" aria-live="polite"></p>
-    <p><a class="text-link" href="CONSOLE_TEST.js">無法自動複製時，開啟完整程式檔</a></p>
-    <p class="muted">移除測試介面：<code>window.__xcbConsoleCleanup?.()</code>。已儲存的譯文、待做、筆記與單字本仍會保留。</p>
+    <p><a class="text-link" href="CONSOLE_TEST.js" data-zh="無法自動複製時，開啟完整程式檔" data-ko="자동 복사가 안 되면 전체 코드 파일 열기">無法自動複製時，開啟完整程式檔</a></p>
+    <p class="muted"><span data-zh="測試介面移除指令：" data-ko="테스트 화면 제거 명령: ">測試介面移除指令：</span><code>window.__xcbConsoleCleanup?.()</code><span data-zh="。已儲存的譯文、待做、筆記與單字本仍會保留。" data-ko=". 저장된 번역, 할 일, 메모와 단어장은 유지됩니다.">。已儲存的譯文、待做、筆記與單字本仍會保留。</span></p>
   </section>
 
   <section class="panel">
-    <h2>使用限制</h2>
-    <p>工具只能修改 <strong>X 網頁版</strong>，不能覆蓋 Android 或 iPhone 的原生 X App。不同裝置的本機快取各自保存；設定 Notion 同步閘道後，可在新裝置先預覽再讀回。</p>
+    <h2 data-zh="使用限制" data-ko="사용 제한">使用限制</h2>
+    <p data-zh="工具只能修改 X 網頁版，不能覆蓋 Android 或 iPhone 的原生 X App。不同裝置的本機快取各自保存；設定 Notion 同步閘道後，可在新裝置先預覽再讀回。" data-ko="이 도구는 X 웹사이트만 수정하며 Android 또는 iPhone의 X 앱은 수정할 수 없습니다. 기기별 로컬 캐시는 따로 저장되며, Notion 동기화 게이트웨이를 설정하면 새 기기에서 미리 확인한 뒤 가져올 수 있습니다.">工具只能修改 X 網頁版，不能覆蓋 Android 或 iPhone 的原生 X App。不同裝置的本機快取各自保存；設定 Notion 同步閘道後，可在新裝置先預覽再讀回。</p>
   </section>
 
   <details>
-    <summary>診斷與舊版書籤檔</summary>
-    <p><a class="text-link" href="BOOKMARKLET_SELF_TEST.txt">書籤自我測試</a></p>
-    <p><a class="text-link" href="GITHUB_BOOKMARKLET.txt">GitHub 短版</a>：已確認會被 X CSP 阻擋。</p>
-    <p><a class="text-link" href="X_CONTEXT_BRIDGE_BOOKMARKLET_DIRECT.txt">直接離線版</a>：不載入 GitHub，但通常超過手機書籤長度。</p>
-    <p><a class="text-link" href="X_CONTEXT_BRIDGE_BOOKMARKLET.txt">Base64 離線版</a>：同樣很長，且可能受到 eval 限制。</p>
+    <summary data-zh="診斷與舊版書籤檔" data-ko="진단 및 이전 북마클릿 파일">診斷與舊版書籤檔</summary>
+    <p><a class="text-link" href="BOOKMARKLET_SELF_TEST.txt" data-zh="書籤自我測試" data-ko="북마클릿 자체 테스트">書籤自我測試</a></p>
+    <p><a class="text-link" href="GITHUB_BOOKMARKLET.txt" data-zh="GitHub 短版（已確認會被 X CSP 阻擋）" data-ko="GitHub 짧은 버전(X CSP 차단 확인됨)">GitHub 短版（已確認會被 X CSP 阻擋）</a></p>
+    <p><a class="text-link" href="X_CONTEXT_BRIDGE_BOOKMARKLET_DIRECT.txt" data-zh="直接離線版（通常超過手機書籤長度）" data-ko="직접 오프라인 버전(대부분 휴대폰 북마크 길이 초과)">直接離線版（通常超過手機書籤長度）</a></p>
+    <p><a class="text-link" href="X_CONTEXT_BRIDGE_BOOKMARKLET.txt" data-zh="Base64 離線版（同樣很長且可能受 eval 限制）" data-ko="Base64 오프라인 버전(길이 및 eval 제한 가능)">Base64 離線版（同樣很長且可能受 eval 限制）</a></p>
   </details>
 </main>
 <script>
+  const languageKey = 'xcb_install_language';
+  let pageLanguage = localStorage.getItem(languageKey) || (navigator.language.toLowerCase().startsWith('ko') ? 'ko' : 'zh');
+  const copyMessages = {
+    zh: {
+      title: 'X Context Bridge 免費安裝',
+      reading: '正在讀取完整版…',
+      copied: '已複製。現在到 X 訊息頁的主控台貼上即可。',
+      failed: '瀏覽器沒有允許自動複製。請使用下面的「開啟完整程式檔」。'
+    },
+    ko: {
+      title: 'X Context Bridge 무료 설치',
+      reading: '전체판을 불러오는 중…',
+      copied: '복사했습니다. 이제 X 쪽지 페이지의 개발자 콘솔에 붙여넣으세요.',
+      failed: '브라우저가 자동 복사를 허용하지 않았습니다. 아래의 전체 코드 파일을 여세요.'
+    }
+  };
+  const applyLanguage = language => {
+    pageLanguage = language === 'ko' ? 'ko' : 'zh';
+    localStorage.setItem(languageKey, pageLanguage);
+    document.documentElement.lang = pageLanguage === 'ko' ? 'ko' : 'zh-Hant';
+    document.title = copyMessages[pageLanguage].title;
+    document.querySelectorAll('[data-zh][data-ko]').forEach(node => {
+      node.textContent = node.dataset[pageLanguage];
+    });
+    document.querySelectorAll('[data-language]').forEach(button => {
+      button.setAttribute('aria-pressed', String(button.dataset.language === pageLanguage));
+    });
+    document.getElementById('copy-status').textContent = '';
+  };
+  document.querySelectorAll('[data-language]').forEach(button => {
+    button.addEventListener('click', () => applyLanguage(button.dataset.language));
+  });
+  applyLanguage(pageLanguage);
+
   const userAgent = navigator.userAgent;
   const platform = /iPhone|iPad|iPod/.test(userAgent)
     ? 'ios'
     : /Android/.test(userAgent)
       ? 'android'
       : 'desktop';
-  document.querySelector('[data-platform="' + platform + '"]')?.classList.add('recommended');
+  document.querySelectorAll('[data-platform="' + platform + '"]').forEach(card => card.classList.add('recommended'));
 
   const copyButton = document.getElementById('copy-console');
   const copyStatus = document.getElementById('copy-status');
   copyButton.addEventListener('click', async () => {
     copyButton.disabled = true;
-    copyStatus.textContent = '正在讀取完整版…';
+    copyStatus.textContent = copyMessages[pageLanguage].reading;
     try {
-      const response = await fetch('CONSOLE_TEST.js?version=0.8.0-test', { cache: 'no-store' });
+      const response = await fetch('CONSOLE_TEST.js?version=0.8.2-test', { cache: 'no-store' });
       if (!response.ok) throw new Error('HTTP ' + response.status);
       const source = await response.text();
       await navigator.clipboard.writeText(source);
-      copyStatus.textContent = '已複製。現在到 X 訊息頁的主控台貼上即可。';
+      copyStatus.textContent = copyMessages[pageLanguage].copied;
     } catch (error) {
-      copyStatus.textContent = '瀏覽器沒有允許自動複製。請使用下面的「開啟完整程式檔」。';
+      copyStatus.textContent = copyMessages[pageLanguage].failed;
     } finally {
       copyButton.disabled = false;
     }
