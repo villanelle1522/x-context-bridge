@@ -5,7 +5,7 @@
  Remove it with: window.__xcbConsoleCleanup()
 */
 (() => {
-  const VERSION = '0.10.11-test';
+  const VERSION = '0.10.12-test';
   const NOTION_SYNC_EPOCH = 2;
   const STYLE_ID = 'xcb-console-style';
   const PAUSE_STYLE_ID = 'xcb-test-clean-style';
@@ -490,15 +490,49 @@
       delete record.autoTranslationError;
       record.updatedAt = new Date().toISOString();
     }
+    indexRecordText(record);
     return changed;
   };
   let scheduleNotionAutoSync = () => {};
   let suppressNotionAutoSync = false;
-  const save = () => {
+  let saveTimer = 0;
+  let stateDirty = false;
+  const flushSave = () => {
+    clearTimeout(saveTimer);
+    saveTimer = 0;
+    if (!stateDirty) return;
     localStorage.setItem(KEY, JSON.stringify(state));
+    stateDirty = false;
+  };
+  const save = (immediate = false) => {
+    stateDirty = true;
     if (!suppressNotionAutoSync) scheduleNotionAutoSync();
+    if (immediate) { flushSave(); return; }
+    if (!saveTimer) saveTimer = setTimeout(flushSave, 280);
   };
   const saveSettings = () => localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  const messageTextIndex = new Map();
+  const indexedTextById = new Map();
+  const indexRecordText = record => {
+    if (!record?.id) return;
+    const nextText = String(record.text || '');
+    const previousText = indexedTextById.get(record.id);
+    if (previousText === nextText) return;
+    if (previousText) {
+      const previousBucket = messageTextIndex.get(previousText);
+      previousBucket?.delete(record.id);
+      if (!previousBucket?.size) messageTextIndex.delete(previousText);
+    }
+    indexedTextById.set(record.id, nextText);
+    if (!nextText) return;
+    const bucket = messageTextIndex.get(nextText) || new Set();
+    bucket.add(record.id);
+    messageTextIndex.set(nextText, bucket);
+  };
+  const recordsForText = text => [...(messageTextIndex.get(String(text || '')) || [])]
+    .map(id => state.messages[id])
+    .filter(record => record?.text === text);
+  Object.values(state.messages).forEach(indexRecordText);
   const sourceMatches = text => {
     const source = detectedSourceLanguage(text);
     return Boolean(source && source !== directionTarget() && selectedSourceLanguages().includes(source));
@@ -1334,6 +1368,7 @@
     if (changed && notionTimestamp(remote.updatedAt) > notionTimestamp(record.updatedAt)) {
       record.updatedAt = remote.updatedAt;
     }
+    indexRecordText(record);
     return { changed, conflict };
   };
   const mergeImportedCollection = (remote, mode) => {
@@ -1598,7 +1633,7 @@
     const side = messageSideOf(el);
     if (side !== 'unknown') record.speakerSide = side;
     record.author ||= side === 'self' ? 'self' : side === 'other' ? conversationLabel(record) : '';
-    captureConversation();
+    if (!state.conversations[record.conversationId]) captureConversation();
     if (sanitizeRecord(record, text)) save();
     rememberQuotedMessage(el, record);
     return record;
@@ -1607,7 +1642,7 @@
     const quote = quoteInfoOf(el);
     if (!quote.text) return null;
     let changed = false;
-    const directMatches = Object.values(state.messages).filter(record => !record.quoteOnly && record.id !== sourceRecord.id && record.text === quote.text);
+    const directMatches = recordsForText(quote.text).filter(record => !record.quoteOnly && record.id !== sourceRecord.id);
     const quoteId = `quote-${hash(`${location.pathname}|${quote.author}|${quote.text}`)}`;
     const recovered = directMatches.length === 1
       ? directMatches[0]
@@ -1620,8 +1655,9 @@
           savedAt: new Date().toISOString(),
           conversationId: location.pathname,
           recoveredFromQuote: true,
-          quoteOnly: true
-        });
+           quoteOnly: true
+         });
+    indexRecordText(recovered);
     if (!recovered.conversationId) { recovered.conversationId = location.pathname; changed = true; }
     recovered.seenInQuote = true;
     if (!recovered.quoteAuthor && quote.author) { recovered.quoteAuthor = quote.author; changed = true; }
@@ -1681,8 +1717,8 @@
     document.querySelectorAll(selector).forEach(el => {
       const quote = quoteInfoOf(el);
       if (!quote.text || !quote.element) return;
-      const record = Object.values(state.messages).find(item =>
-        item.text === quote.text && (!item.quoteAuthor || !quote.author || item.quoteAuthor === quote.author)
+      const record = recordsForText(quote.text).find(item =>
+        !item.quoteAuthor || !quote.author || item.quoteAuthor === quote.author
       );
       if (record) drawQuotePreview(quote.element, record);
     });
@@ -1840,15 +1876,20 @@
     document.querySelectorAll('[data-xcb-console-quote="true"]').forEach(restoreQuotePreview);
     document.querySelector('.xcb-console-overlay')?.remove();
   };
+  let layoutRevision = 0;
 
   function draw(el, record) {
     let card = el.querySelector(':scope > .xcb-console-card');
     const scopeMatches = translationScopeMatches(record);
     const translation = scopeMatches ? activeTranslation(record) : '';
     const notes = scopeMatches ? activeNotes(record) : '';
-    const messageTime = messageTimeOf(el) || record.messageTime || '';
+    const messageTime = record.messageTime || messageTimeOf(el) || '';
     if (messageTime) record.messageTime = messageTime;
     if (!settings.masterEnabled || !settings.enabled || (!translation && !notes)) { restoreConsoleBubble(el); return; }
+    const page = record.page || 0;
+    const signature = hash(`${record.id}|${directionFor(record)}|${page}|${translation}|${notes}|${record.text}|${messageTime}`);
+    const currentLayoutRevision = String(layoutRevision);
+    if (card?.dataset.xcbSignature === signature && card.dataset.xcbLayoutRevision === currentLayoutRevision) return;
     if (!el.dataset.xcbConsoleBaseHeight) el.dataset.xcbConsoleBaseHeight = String(el.offsetHeight);
     if (!el.dataset.xcbConsoleBaseWidth) {
       el.dataset.xcbConsoleBaseWidth = String(el.offsetWidth);
@@ -1862,8 +1903,6 @@
       node.classList.add('xcb-console-native-layer');
       node.dataset.xcbHidden = 'true';
     });
-    const page = record.page || 0;
-    const signature = hash(`${record.id}|${directionFor(record)}|${page}|${translation}|${notes}|${record.text}|${messageTime}`);
     const fitActivePage = () => requestAnimationFrame(() => {
       if (!card.isConnected) return;
       const activePage = card.querySelectorAll('.xcb-console-page')[page];
@@ -1890,8 +1929,13 @@
       card.style.height = `${height}px`;
       el.style.minHeight = `${height}px`;
     });
-    if (card.dataset.xcbSignature === signature) { fitActivePage(); return; }
+    if (card.dataset.xcbSignature === signature) {
+      card.dataset.xcbLayoutRevision = currentLayoutRevision;
+      fitActivePage();
+      return;
+    }
     card.dataset.xcbSignature = signature;
+    card.dataset.xcbLayoutRevision = currentLayoutRevision;
     const compactHint = el.getBoundingClientRect().width < 145;
     card.classList.toggle('xcb-console-compact-hint', compactHint);
     const hintText = compactHint ? `${page + 1}/3` : `${t('swipe')} · ${page + 1}/3`;
@@ -3288,24 +3332,55 @@
     }
     return result;
   }
+  const AUTO_BATCH_LIMIT = 24;
+  const AUTO_SCAN_MIN_GAP = 320;
   let autoTimer;
+  let autoDueAt = 0;
+  let lastAutoScanAt = 0;
+  let autoRunInFlight = false;
+  let autoRerunRequested = false;
   const scheduleAutoTranslation = (delay = 350) => {
     if (!settings.masterEnabled) return;
     // X mutates the conversation DOM constantly. Resetting this timer for every
-    // mutation can starve translation forever, so keep the earliest queued run.
-    if (autoTimer) return;
-    autoTimer = setTimeout(() => {
+    // mutation can starve translation forever. Keep the earliest due run while
+    // enforcing a small gap so continuous scrolling cannot start overlapping scans.
+    const now = Date.now();
+    const wait = Math.max(delay, lastAutoScanAt + AUTO_SCAN_MIN_GAP - now, 0);
+    const dueAt = now + wait;
+    if (autoTimer && autoDueAt <= dueAt) return;
+    clearTimeout(autoTimer);
+    autoDueAt = dueAt;
+    autoTimer = setTimeout(async () => {
       autoTimer = null;
-      autoTranslateVisible();
-    }, delay);
+      autoDueAt = 0;
+      if (autoRunInFlight) {
+        autoRerunRequested = true;
+        return;
+      }
+      autoRunInFlight = true;
+      lastAutoScanAt = Date.now();
+      try {
+        await autoTranslateVisible();
+      } catch (error) {
+        console.warn('X Context Bridge background scan failed', error);
+      } finally {
+        autoRunInFlight = false;
+        if (autoRerunRequested) {
+          autoRerunRequested = false;
+          scheduleAutoTranslation(120);
+        }
+      }
+    }, wait);
   };
   async function autoTranslateVisible() {
     if (!settings.masterEnabled) return;
     const visible = [...document.querySelectorAll(selector)].map((el, index) => ({ el, record: recordFor(el, index) }));
     visible.forEach(({ el, record }) => draw(el, record));
-    const recoveredQuotes = Object.values(state.messages).filter(record => record.quoteOnly).map(record => ({ el: null, record }));
-    const savedCollections = Object.values(state.messages).filter(record => record.todo || record.note).map(record => ({ el: null, record }));
-    const candidatesById = new Map([...visible, ...recoveredQuotes, ...savedCollections].map(item => [item.record.id, item]));
+    const backgroundRecords = [];
+    for (const record of Object.values(state.messages)) {
+      if (record.quoteOnly || record.todo || record.note) backgroundRecords.push({ el: null, record });
+    }
+    const candidatesById = new Map([...visible, ...backgroundRecords].map(item => [item.record.id, item]));
     const untranslated = [...candidatesById.values()].filter(({ record }) => settings.enabled && translationEligible(record) && !activeTranslation(record));
     const pending = untranslated.filter(({ record }) => canAutoAttempt(record));
     if (!pending.length) {
@@ -3315,10 +3390,12 @@
     }
     const requestedTarget = directionTarget();
     const requestedGoogleTarget = targetLanguageFor(requestedTarget);
-    const pendingRequests = pending.map(item => ({
+    const allPendingRequests = pending.map(item => ({
       ...item,
       direction: directionForTarget(item.record, requestedTarget)
     })).filter(item => item.direction);
+    const pendingRequests = allPendingRequests.slice(0, AUTO_BATCH_LIMIT);
+    const hasMorePending = allPendingRequests.length > pendingRequests.length;
     pendingRequests.forEach(({ record, direction }) => beginAutoAttempt(record, false, direction)); save();
     try {
       const translations = await translateBatch(pendingRequests.map(({ record }) => record.text), requestedGoogleTarget);
@@ -3337,6 +3414,7 @@
       });
       save();
       refreshQuotePreviews();
+      if (hasMorePending) scheduleAutoTranslation(420);
       if (failed.length && failed.some(canRetryLater)) scheduleAutoTranslation(retryDelay(failed));
     } catch (error) {
       console.warn('Google translation failed', error);
@@ -3347,11 +3425,64 @@
   document.addEventListener('contextmenu', onContext, true);
   if (touch) document.addEventListener('click', onTouchClick, true);
   document.addEventListener('keydown', onKeyDown, true);
-  const onViewportChange = () => positionSettingsButton();
+  const onVisibilityPersist = () => { if (document.visibilityState === 'hidden') flushSave(); };
+  const onPageHide = () => flushSave();
+  document.addEventListener('visibilitychange', onVisibilityPersist);
+  window.addEventListener('pagehide', onPageHide);
+  let positionFrame = 0;
+  const scheduleSettingsButtonPosition = () => {
+    if (positionFrame) return;
+    positionFrame = requestAnimationFrame(() => {
+      positionFrame = 0;
+      positionSettingsButton();
+    });
+  };
+  const onViewportChange = () => {
+    layoutRevision += 1;
+    scheduleSettingsButtonPosition();
+    refreshVisible();
+  };
   window.addEventListener('resize', onViewportChange, { passive: true });
-  const onPageScroll = () => scheduleAutoTranslation(150);
+  const onPageScroll = () => scheduleAutoTranslation(220);
   document.addEventListener('scroll', onPageScroll, { capture: true, passive: true });
-  const pageObserver = new MutationObserver(() => { scheduleAutoTranslation(); positionSettingsButton(); });
+  const ownUiSelector = '.xcb-console-card,.xcb-console-overlay,.xcb-console-entry';
+  const entryHostSelector = '[data-testid="dm-conversation-header"],[data-testid="dm-conversation-more-button"],[data-testid="dm-conversation-panel"],[data-testid="dm-container"],[data-testid="dm-composer-container"]';
+  const elementForMutationNode = node => node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+  const isOwnMutationNode = node => {
+    const element = elementForMutationNode(node);
+    return Boolean(element?.matches?.(ownUiSelector) || element?.closest?.(ownUiSelector));
+  };
+  const mutationNodes = mutation => [...mutation.addedNodes, ...mutation.removedNodes];
+  const mutationAffectsMessages = mutation => {
+    const nodes = mutationNodes(mutation);
+    if (nodes.length && nodes.every(isOwnMutationNode)) return false;
+    const target = elementForMutationNode(mutation.target);
+    if (target?.closest?.(ownUiSelector)) return false;
+    if (target?.closest?.(selector)) return true;
+    return nodes.some(node => {
+      const element = elementForMutationNode(node);
+      return Boolean(element?.matches?.(selector) || element?.querySelector?.(selector));
+    });
+  };
+  const mutationAffectsEntry = mutation => mutationNodes(mutation).some(node => {
+    const element = elementForMutationNode(node);
+    return Boolean(element?.matches?.(entryHostSelector) || element?.querySelector?.(entryHostSelector));
+  }) || Boolean(elementForMutationNode(mutation.target)?.closest?.('[data-testid="dm-conversation-header"]'))
+    || (mutation.type === 'attributes' && elementForMutationNode(mutation.target)?.matches?.(entryHostSelector));
+  const pageObserver = new MutationObserver(mutations => {
+    let messagesChanged = false;
+    let entryChanged = false;
+    for (const mutation of mutations) {
+      if (!messagesChanged && mutationAffectsMessages(mutation)) messagesChanged = true;
+      if (!entryChanged && mutationAffectsEntry(mutation)) entryChanged = true;
+      if (messagesChanged && entryChanged) break;
+    }
+    if (messagesChanged) scheduleAutoTranslation();
+    if (entryChanged) {
+      captureConversation();
+      scheduleSettingsButtonPosition();
+    }
+  });
   pageObserver.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['data-testid'] });
   captureConversation();
   if (settings.masterEnabled) {
@@ -3394,6 +3525,9 @@
   window.__xcbConsoleLastVersion = VERSION;
   window.__xcbConsoleFactoryReset = () => {
     if (!confirm(t('factoryConfirm'))) return;
+    clearTimeout(saveTimer);
+    saveTimer = 0;
+    stateDirty = false;
     localStorage.removeItem(KEY);
     localStorage.removeItem(SETTINGS_KEY);
     localStorage.removeItem(GEMINI_API_KEY_KEY);
@@ -3403,6 +3537,7 @@
     location.reload();
   };
   window.__xcbConsoleCleanup = () => {
+    flushSave();
     document.removeEventListener('contextmenu', onContext, true);
     document.removeEventListener('click', onTouchClick, true);
     document.removeEventListener('keydown', onKeyDown, true);
@@ -3410,10 +3545,16 @@
     document.removeEventListener('pointermove', moveEntryDrag, true);
     document.removeEventListener('pointerup', finishEntryDrag, true);
     document.removeEventListener('pointercancel', finishEntryDrag, true);
+    document.removeEventListener('visibilitychange', onVisibilityPersist);
+    window.removeEventListener('pagehide', onPageHide);
     window.removeEventListener('resize', onViewportChange);
     pageObserver.disconnect();
+    cancelAnimationFrame(positionFrame);
+    positionFrame = 0;
     clearTimeout(autoTimer);
     autoTimer = null;
+    autoDueAt = 0;
+    autoRerunRequested = false;
     clearTimeout(notionAutoTimer);
     restoreAllXcbDom();
     document.getElementById(STYLE_ID)?.remove();
