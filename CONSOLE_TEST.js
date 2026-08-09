@@ -1,11 +1,11 @@
 /*
  X Context Bridge — console prototype
- Paste this whole file into DevTools Console while viewing https://x.com/messages/...
+ Paste this whole file into DevTools Console while viewing https://x.com/i/chat/... or https://x.com/messages/...
  Google Translate is used for the initial draft. Drafts stay in localStorage for x.com.
  Remove it with: window.__xcbConsoleCleanup()
 */
 (() => {
-  const VERSION = '0.10.5-test';
+  const VERSION = '0.10.12-test';
   const NOTION_SYNC_EPOCH = 2;
   const STYLE_ID = 'xcb-console-style';
   const PAUSE_STYLE_ID = 'xcb-test-clean-style';
@@ -53,6 +53,7 @@
   const KEY = 'xcb_console_manual_state_v1';
   const SETTINGS_KEY = 'xcb_console_settings_v1';
   const GEMINI_API_KEY_KEY = 'xcb_console_gemini_key_v1';
+  const OPENAI_API_KEY_KEY = 'xcb_console_openai_key_v1';
   const NOTION_SECRET_KEY = 'xcb_console_notion_sync_secret_v1';
   const PENDING_JUMP_KEY = 'xcb_console_pending_jump_v1';
   const state = JSON.parse(localStorage.getItem(KEY) || '{"messages":{}}');
@@ -68,11 +69,13 @@
     dataScope: 'current',
     apiProvider: 'gemini',
     geminiModel: 'gemini-3.1-flash-lite',
+    openaiBaseUrl: 'https://api.openai.com/v1',
     openaiModel: 'gpt-5.6-luna',
     contextBefore: 2,
     contextAfter: 2,
     includeQuote: true,
     rememberApiKey: false,
+    rememberOpenAIKey: false,
     entryYRatio: 0.5,
     notionEndpoint: '',
     rememberNotionSecret: false,
@@ -91,6 +94,8 @@
   settings.sourceLanguages = settings.sourceLanguages.filter(language => language !== settings.targetLanguage);
   if (!settings.sourceLanguages.length) settings.sourceLanguages = [settings.targetLanguage === 'ko' ? 'zh' : 'ko'];
   settings.direction = `${settings.sourceLanguages[0]}-${settings.targetLanguage}`;
+  settings.openaiBaseUrl = String(settings.openaiBaseUrl || 'https://api.openai.com/v1').trim().replace(/\/+$/, '');
+  settings.openaiModel = String(settings.openaiModel || 'gpt-5.6-luna').trim();
   // The Notion backup rows were intentionally rebuilt for sync epoch 2.
   // Clear only the incremental checkpoint once, while keeping the configured
   // gateway URL and sync password unchanged.
@@ -203,12 +208,12 @@
       importResult: (added, updated, conflicts) => `合併完成：新增 ${added}、更新 ${updated}；處理 ${conflicts} 筆衝突。`,
       notionAutoSync: '編輯後自動同步', notionAutoHint: '變更停止約 20 秒後才同步；預設關閉以節省流量。',
       notionAutoSuccess: '自動同步完成。', notionAutoFailed: message => `自動同步失敗：${message}`,
-      apiProvider: 'AI 服務', geminiProvider: 'Gemini', openaiProvider: 'OpenAI',
-      apiKey: 'Gemini API Key', openaiApiKey: 'OpenAI API Key', apiConfigured: '已設定；輸入新值才會覆蓋',
+      apiProvider: 'AI 服務', geminiProvider: 'Gemini', openaiProvider: 'OpenAI 相容',
+      apiKey: 'Gemini API Key', openaiApiKey: 'API Key', openaiBaseUrl: 'Base URL', apiConfigured: '已設定；輸入新值才會覆蓋',
       apiPaste: '貼上 API Key', rememberHere: '記住在此網站',
       apiWarning: 'Gemini Key 預設只保留到本次頁面關閉。勾選後會存入 x.com 的 localStorage，僅建議個人裝置使用。',
-      openaiWarning: 'OpenAI Key 只保留到本次頁面關閉，不寫入 localStorage。X 會阻擋一般網頁直接連線；請使用 Userscript 安裝版。',
-      model: '模型', contextBefore: '帶入前文', contextAfter: '帶入後文',
+      openaiWarning: 'Key 預設只保留到本次頁面關閉。勾選後會存入 x.com 的 localStorage，僅建議個人裝置使用。Base URL 預設為 OpenAI。',
+      model: '模型', customModel: '自訂模型', contextBefore: '帶入前文', contextAfter: '帶入後文',
       includeQuote: '包含引用訊息', none: '不帶入', messages: count => `${count} 則`,
       clean: 'Clean｜關閉翻譯與書籤', enableAll: '重新開啟所有功能',
       fabOpen: 'X Context Bridge 翻譯與設定', fabEnable: '重新開啟 X Context Bridge',
@@ -325,12 +330,12 @@
       importResult: (added, updated, conflicts) => `병합 완료: 추가 ${added}개, 업데이트 ${updated}개, 충돌 ${conflicts}개 처리.`,
       notionAutoSync: '편집 후 자동 동기화', notionAutoHint: '변경이 멈춘 뒤 약 20초 후 동기화합니다. 데이터 절약을 위해 기본값은 꺼짐입니다.',
       notionAutoSuccess: '자동 동기화 완료.', notionAutoFailed: message => `자동 동기화 실패: ${message}`,
-      apiProvider: 'AI 서비스', geminiProvider: 'Gemini', openaiProvider: 'OpenAI',
-      apiKey: 'Gemini API 키', openaiApiKey: 'OpenAI API 키', apiConfigured: '설정됨. 새 값을 입력하면 교체됩니다',
+      apiProvider: 'AI 서비스', geminiProvider: 'Gemini', openaiProvider: 'OpenAI 호환',
+      apiKey: 'Gemini API 키', openaiApiKey: 'API 키', openaiBaseUrl: 'Base URL', apiConfigured: '설정됨. 새 값을 입력하면 교체됩니다',
       apiPaste: 'API 키 붙여넣기', rememberHere: '이 사이트에 기억',
       apiWarning: 'Gemini 키는 기본적으로 현재 페이지가 닫힐 때까지만 유지됩니다. 기억을 선택하면 x.com의 localStorage에 저장되므로 개인 기기에서만 사용하세요.',
-      openaiWarning: 'OpenAI 키는 현재 페이지가 닫힐 때까지만 유지되며 localStorage에 저장하지 않습니다. X가 일반 웹 요청을 차단하므로 Userscript 설치판을 사용하세요.',
-      model: '모델', contextBefore: '앞 문맥', contextAfter: '뒤 문맥',
+      openaiWarning: '키는 기본적으로 현재 페이지를 닫을 때까지만 유지됩니다. 기억을 선택하면 x.com의 localStorage에 저장되므로 개인 기기에서만 사용하세요. Base URL의 기본값은 OpenAI입니다.',
+      model: '모델', customModel: '사용자 지정 모델', contextBefore: '앞 문맥', contextAfter: '뒤 문맥',
       includeQuote: '인용 메시지 포함', none: '포함 안 함', messages: count => `${count}개`,
       clean: 'Clean｜번역·북마크 끄기', enableAll: '모든 기능 다시 켜기',
       fabOpen: 'X Context Bridge 번역 및 정리', fabEnable: 'X Context Bridge 다시 켜기',
@@ -372,7 +377,7 @@
     return typeof value === 'function' ? value(...args) : value;
   };
   let sessionGeminiApiKey = settings.rememberApiKey ? (localStorage.getItem(GEMINI_API_KEY_KEY) || '') : '';
-  let sessionOpenAIApiKey = '';
+  let sessionOpenAIApiKey = settings.rememberOpenAIKey ? (localStorage.getItem(OPENAI_API_KEY_KEY) || '') : '';
   let sessionNotionSecret = settings.rememberNotionSecret ? (localStorage.getItem(NOTION_SECRET_KEY) || '') : '';
   const activeApiKey = () => settings.apiProvider === 'openai' ? sessionOpenAIApiKey : sessionGeminiApiKey;
   const touch = matchMedia('(pointer: coarse)').matches;
@@ -485,15 +490,49 @@
       delete record.autoTranslationError;
       record.updatedAt = new Date().toISOString();
     }
+    indexRecordText(record);
     return changed;
   };
   let scheduleNotionAutoSync = () => {};
   let suppressNotionAutoSync = false;
-  const save = () => {
+  let saveTimer = 0;
+  let stateDirty = false;
+  const flushSave = () => {
+    clearTimeout(saveTimer);
+    saveTimer = 0;
+    if (!stateDirty) return;
     localStorage.setItem(KEY, JSON.stringify(state));
+    stateDirty = false;
+  };
+  const save = (immediate = false) => {
+    stateDirty = true;
     if (!suppressNotionAutoSync) scheduleNotionAutoSync();
+    if (immediate) { flushSave(); return; }
+    if (!saveTimer) saveTimer = setTimeout(flushSave, 280);
   };
   const saveSettings = () => localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+  const messageTextIndex = new Map();
+  const indexedTextById = new Map();
+  const indexRecordText = record => {
+    if (!record?.id) return;
+    const nextText = String(record.text || '');
+    const previousText = indexedTextById.get(record.id);
+    if (previousText === nextText) return;
+    if (previousText) {
+      const previousBucket = messageTextIndex.get(previousText);
+      previousBucket?.delete(record.id);
+      if (!previousBucket?.size) messageTextIndex.delete(previousText);
+    }
+    indexedTextById.set(record.id, nextText);
+    if (!nextText) return;
+    const bucket = messageTextIndex.get(nextText) || new Set();
+    bucket.add(record.id);
+    messageTextIndex.set(nextText, bucket);
+  };
+  const recordsForText = text => [...(messageTextIndex.get(String(text || '')) || [])]
+    .map(id => state.messages[id])
+    .filter(record => record?.text === text);
+  Object.values(state.messages).forEach(indexRecordText);
   const sourceMatches = text => {
     const source = detectedSourceLanguage(text);
     return Boolean(source && source !== directionTarget() && selectedSourceLanguages().includes(source));
@@ -1329,6 +1368,7 @@
     if (changed && notionTimestamp(remote.updatedAt) > notionTimestamp(record.updatedAt)) {
       record.updatedAt = remote.updatedAt;
     }
+    indexRecordText(record);
     return { changed, conflict };
   };
   const mergeImportedCollection = (remote, mode) => {
@@ -1593,7 +1633,7 @@
     const side = messageSideOf(el);
     if (side !== 'unknown') record.speakerSide = side;
     record.author ||= side === 'self' ? 'self' : side === 'other' ? conversationLabel(record) : '';
-    captureConversation();
+    if (!state.conversations[record.conversationId]) captureConversation();
     if (sanitizeRecord(record, text)) save();
     rememberQuotedMessage(el, record);
     return record;
@@ -1602,7 +1642,7 @@
     const quote = quoteInfoOf(el);
     if (!quote.text) return null;
     let changed = false;
-    const directMatches = Object.values(state.messages).filter(record => !record.quoteOnly && record.id !== sourceRecord.id && record.text === quote.text);
+    const directMatches = recordsForText(quote.text).filter(record => !record.quoteOnly && record.id !== sourceRecord.id);
     const quoteId = `quote-${hash(`${location.pathname}|${quote.author}|${quote.text}`)}`;
     const recovered = directMatches.length === 1
       ? directMatches[0]
@@ -1615,8 +1655,9 @@
           savedAt: new Date().toISOString(),
           conversationId: location.pathname,
           recoveredFromQuote: true,
-          quoteOnly: true
-        });
+           quoteOnly: true
+         });
+    indexRecordText(recovered);
     if (!recovered.conversationId) { recovered.conversationId = location.pathname; changed = true; }
     recovered.seenInQuote = true;
     if (!recovered.quoteAuthor && quote.author) { recovered.quoteAuthor = quote.author; changed = true; }
@@ -1676,8 +1717,8 @@
     document.querySelectorAll(selector).forEach(el => {
       const quote = quoteInfoOf(el);
       if (!quote.text || !quote.element) return;
-      const record = Object.values(state.messages).find(item =>
-        item.text === quote.text && (!item.quoteAuthor || !quote.author || item.quoteAuthor === quote.author)
+      const record = recordsForText(quote.text).find(item =>
+        !item.quoteAuthor || !quote.author || item.quoteAuthor === quote.author
       );
       if (record) drawQuotePreview(quote.element, record);
     });
@@ -1694,11 +1735,19 @@
     };
   };
   const messageTimeOf = el => {
-    const row = el?.closest?.('[data-testid^="message-"]') || el?.parentElement;
-    const values = [...(row?.querySelectorAll?.('[class*="text-subtext3"]') || [])]
-      .map(node => node.textContent?.trim() || '')
+    let row = el;
+    for (let node = el?.parentElement; node; node = node.parentElement) {
+      const testId = node.getAttribute?.('data-testid') || '';
+      if (/^message-(?!text-)/.test(testId)) { row = node; break; }
+    }
+    const candidates = [...(row?.querySelectorAll?.('[class*="text-subtext3"],time,[datetime]') || [])]
+      .flatMap(node => [node.textContent?.trim() || '', node.getAttribute?.('datetime') || ''])
       .filter(Boolean);
-    return [...new Set(values)][0] || '';
+    for (const value of [...new Set(candidates)]) {
+      const match = value.match(/(?:^|\s)(\d{1,2}:\d{2}\s*(?:AM|PM)|(?:[01]?\d|2[0-3]):[0-5]\d)(?:\s|$)/i);
+      if (match) return match[1].replace(/\s+/g, ' ').trim();
+    }
+    return '';
   };
   const compactMessageSnapshot = (el, index) => {
     const related = recordFor(el, index);
@@ -1774,7 +1823,7 @@
     .xcb-console-track{display:flex;align-items:flex-start;width:300%;font:inherit;line-height:inherit;transition:transform .24s ease}.xcb-console-page{flex:none;width:33.333%;box-sizing:border-box;padding:var(--xcb-pad-top,8px) var(--xcb-pad-right,12px) var(--xcb-pad-bottom,8px) var(--xcb-pad-left,12px);font:inherit;line-height:inherit;letter-spacing:inherit;white-space:pre-wrap;overflow-wrap:anywhere;word-break:break-word}.xcb-console-page::after{content:"";display:inline-block;width:82px;height:.7em;vertical-align:baseline}.xcb-console-card.xcb-console-compact-hint .xcb-console-page::after{width:30px}.xcb-console-page small{display:block;margin-bottom:4px;color:inherit;font-size:.76em;line-height:1.2;opacity:.62}.xcb-console-page:first-child small{display:none}.xcb-console-hint{position:absolute;right:max(8px,var(--xcb-pad-right,8px));bottom:var(--xcb-pad-bottom,6px);color:inherit;opacity:.3;font-size:10px;line-height:1.2}.xcb-console-card:hover .xcb-console-hint{opacity:.65}
     html[data-xcb-console-mode="1"] .xcb-overlay,html[data-xcb-console-mode="1"] .xcb-drawer-overlay,html[data-xcb-console-mode="1"] .xcb-fab{display:none!important}.xcb-console-overlay{position:fixed;inset:0;z-index:2147483647;display:grid;place-items:center;padding:16px;background:#0009;font:15px/1.45 "TwitterChirp","Chirp",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.xcb-console-editor{width:min(500px,calc(100vw - 24px));max-height:82vh;overflow:auto;border:1px solid #536471;border-radius:20px;color:#eff3f4;background:#000;box-shadow:0 20px 80px #000c}.xcb-console-editor>header{display:flex;align-items:baseline;gap:8px;padding:18px 20px 12px;font-size:18px;font-weight:700}.xcb-console-version{color:#8b98a5;font-size:11px;font-weight:400}.xcb-console-source{margin:0 18px 14px;padding:10px 12px;color:#b6c2cb;border-left:3px solid #1d9bf0;background:#0f1419;white-space:pre-wrap}.xcb-console-tabs,.xcb-console-settings-nav{display:flex;gap:4px;overflow-x:auto;padding:0 14px;border-bottom:1px solid #2f3336;scrollbar-width:none}.xcb-console-tabs::-webkit-scrollbar,.xcb-console-settings-nav::-webkit-scrollbar{display:none}.xcb-console-tabs button,.xcb-console-settings-nav button{flex:0 0 auto;min-height:44px;padding:10px 11px;border:0;color:#8b98a5;background:none;font:inherit;cursor:pointer;white-space:nowrap}.xcb-console-tabs button.active,.xcb-console-settings-nav button.active{color:#eff3f4;border-bottom:2px solid #1d9bf0;font-weight:700}.xcb-console-editor>textarea{display:block;min-height:150px;width:calc(100% - 36px);box-sizing:border-box;margin:16px 18px;padding:12px;resize:vertical;border:1px solid #536471;border-radius:12px;color:#eff3f4;background:#0f1419;font:15px/1.55 "TwitterChirp","Chirp",-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}.xcb-console-actions{position:sticky;bottom:0;display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:8px;padding:12px 18px calc(16px + env(safe-area-inset-bottom));border-top:1px solid #2f3336;background:#000}.xcb-console-actions button,.xcb-console-panel button{min-height:42px;padding:9px 15px;border:0;border-radius:999px;color:#eff3f4;background:#202327;font:inherit;cursor:pointer}.xcb-console-master{margin-right:auto}.xcb-console-actions .xcb-console-done,.xcb-console-panel .primary{color:#fff;background:#1d9bf0}.xcb-console-panel .danger{color:#f4212e;background:#20090c}.xcb-console-panel{display:grid;gap:14px;padding:18px}.xcb-console-field{display:grid;gap:7px}.xcb-console-field>span,.xcb-console-muted{color:#8b98a5;font-size:13px}.xcb-console-panel input:not([type="checkbox"]),.xcb-console-panel select{width:100%;min-height:44px;box-sizing:border-box;padding:9px 11px;border:1px solid #536471;border-radius:12px;color:#eff3f4;background:#0f1419;font:inherit}.xcb-console-toggle{display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:44px}.xcb-console-toggle input{position:relative;width:44px;height:24px;flex:0 0 auto;margin:0;appearance:none;border:0;border-radius:999px;background:#536471;cursor:pointer}.xcb-console-toggle input::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:#fff;transition:transform .18s}.xcb-console-toggle input:checked{background:#1d9bf0}.xcb-console-toggle input:checked::after{transform:translateX(20px)}.xcb-console-list{display:grid;gap:9px}.xcb-console-list-row{display:grid;grid-template-columns:minmax(0,1fr) 42px;gap:8px;align-items:center}.xcb-console-list-item{display:grid!important;gap:4px!important;width:100%;min-width:0;min-height:0!important;padding:12px!important;border:1px solid #2f3336!important;border-radius:14px!important;text-align:start!important;background:#0f1419!important}.xcb-console-list-item strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.xcb-console-list-item span{white-space:pre-wrap;overflow-wrap:anywhere}.xcb-console-list-item small{color:#8b98a5;white-space:pre-wrap;overflow-wrap:anywhere}.xcb-console-list-remove{width:40px;min-width:40px;min-height:40px!important;padding:0!important;color:#f4212e!important;background:transparent!important;border:1px solid #2f3336!important;font-size:20px!important}.xcb-console-empty,.xcb-console-status{margin:0;color:#8b98a5}.xcb-console-organize{display:grid;gap:14px;padding:18px}.xcb-console-organize-switch{display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:3px;border-radius:999px;background:#16181c}.xcb-console-organize-switch button{min-height:40px;border:0;border-radius:999px;color:#8b98a5;background:transparent;font:inherit}.xcb-console-organize-switch button.active{color:#eff3f4;background:#2f3336;font-weight:700}.xcb-console-organize input,.xcb-console-organize textarea{width:100%;min-height:44px;box-sizing:border-box;margin:0;padding:9px 11px;border:1px solid #536471;border-radius:12px;color:#eff3f4;background:#0f1419;font:inherit}.xcb-console-organize textarea{min-height:82px;resize:vertical}.xcb-console-entry{display:grid;place-items:center;box-sizing:border-box;padding:0;color:inherit;cursor:pointer}.xcb-console-entry svg{width:20px;height:20px;fill:currentColor}.xcb-console-entry-header{position:static!important;z-index:1;flex:0 0 40px;width:40px;height:40px;margin:0;border:1px solid transparent;border-radius:999px;background:transparent;box-shadow:none}.xcb-console-entry-header:hover{background:#202327}.xcb-console-entry-fallback{position:fixed;right:0;top:50%;transform:translateY(-50%);z-index:2147483646;width:34px;height:44px;border:1px solid #536471;border-right:0;border-radius:22px 0 0 22px;color:#eff3f4;background:rgba(0,0,0,.92);box-shadow:0 4px 16px #0008}.xcb-console-entry-fallback:hover{background:#16181c}.xcb-console-entry.xcb-console-entry-off{opacity:.58}.xcb-console-entry.xcb-console-entry-off svg{width:15px;height:15px}@media (max-width:700px){.xcb-console-overlay{align-items:end;padding:0}.xcb-console-editor{width:100%;max-height:min(88dvh,760px);border-width:1px 0 0;border-radius:22px 22px 0 0}.xcb-console-editor>header{padding-top:16px}.xcb-console-editor>textarea{min-height:128px}.xcb-console-tabs,.xcb-console-settings-nav{padding-inline:10px;scroll-snap-type:x proximity}.xcb-console-tabs button,.xcb-console-settings-nav button{min-height:48px;scroll-snap-align:start}.xcb-console-actions button,.xcb-console-panel button{min-height:44px}.xcb-console-entry-header{flex-basis:38px;width:38px;height:38px}.xcb-console-entry-fallback{right:0;top:auto;bottom:max(116px,calc(env(safe-area-inset-bottom) + 96px));transform:none}}`;
   style.textContent += `
-    .xcb-console-hint{white-space:nowrap;max-width:calc(100% - 12px);overflow:hidden}
+    .xcb-console-page{padding-bottom:calc(var(--xcb-pad-bottom,8px) + 14px)}.xcb-console-page::after{display:none}.xcb-console-hint{display:flex;align-items:center;gap:5px;white-space:nowrap;max-width:calc(100% - 12px);overflow:hidden;opacity:1}.xcb-console-message-time{font-size:11px;font-weight:400;opacity:.82}.xcb-console-swipe-hint{opacity:.3}.xcb-console-card:hover .xcb-console-swipe-hint{opacity:.65}
     .xcb-console-organize-switch{display:flex;gap:0;padding:0;border-bottom:1px solid #2f3336;border-radius:0;background:transparent}
     .xcb-console-organize-switch button{flex:1;min-height:42px;padding:8px;border:0;border-bottom:2px solid transparent;border-radius:0;appearance:none;color:#8b98a5;background:transparent;font:inherit}
     .xcb-console-organize-switch button.active{border-bottom-color:#1d9bf0;color:#eff3f4;background:transparent;font-weight:700}
@@ -1827,13 +1876,20 @@
     document.querySelectorAll('[data-xcb-console-quote="true"]').forEach(restoreQuotePreview);
     document.querySelector('.xcb-console-overlay')?.remove();
   };
+  let layoutRevision = 0;
 
   function draw(el, record) {
     let card = el.querySelector(':scope > .xcb-console-card');
     const scopeMatches = translationScopeMatches(record);
     const translation = scopeMatches ? activeTranslation(record) : '';
     const notes = scopeMatches ? activeNotes(record) : '';
+    const messageTime = record.messageTime || messageTimeOf(el) || '';
+    if (messageTime) record.messageTime = messageTime;
     if (!settings.masterEnabled || !settings.enabled || (!translation && !notes)) { restoreConsoleBubble(el); return; }
+    const page = record.page || 0;
+    const signature = hash(`${record.id}|${directionFor(record)}|${page}|${translation}|${notes}|${record.text}|${messageTime}`);
+    const currentLayoutRevision = String(layoutRevision);
+    if (card?.dataset.xcbSignature === signature && card.dataset.xcbLayoutRevision === currentLayoutRevision) return;
     if (!el.dataset.xcbConsoleBaseHeight) el.dataset.xcbConsoleBaseHeight = String(el.offsetHeight);
     if (!el.dataset.xcbConsoleBaseWidth) {
       el.dataset.xcbConsoleBaseWidth = String(el.offsetWidth);
@@ -1847,16 +1903,14 @@
       node.classList.add('xcb-console-native-layer');
       node.dataset.xcbHidden = 'true';
     });
-    const page = record.page || 0;
-    const signature = hash(`${record.id}|${directionFor(record)}|${page}|${translation}|${notes}|${record.text}`);
     const fitActivePage = () => requestAnimationFrame(() => {
       if (!card.isConnected) return;
       const activePage = card.querySelectorAll('.xcb-console-page')[page];
       if (!activePage) return;
       const pageCopies = [
         translation || t('emptyTranslation'),
-        `${t('toneNotes')}\n${notes || t('emptyNotes')}`,
-        `${t('original')}\n${record.text || ''}`
+        `${t('original')}\n${record.text || ''}`,
+        `${t('toneNotes')}\n${notes || t('emptyNotes')}`
       ];
       const glyphCount = Math.max(...pageCopies.map(copy => [...copy].length));
       const baseWidth = Math.max(1, Number(el.dataset.xcbConsoleBaseWidth) || el.offsetWidth || 1);
@@ -1875,12 +1929,17 @@
       card.style.height = `${height}px`;
       el.style.minHeight = `${height}px`;
     });
-    if (card.dataset.xcbSignature === signature) { fitActivePage(); return; }
+    if (card.dataset.xcbSignature === signature) {
+      card.dataset.xcbLayoutRevision = currentLayoutRevision;
+      fitActivePage();
+      return;
+    }
     card.dataset.xcbSignature = signature;
+    card.dataset.xcbLayoutRevision = currentLayoutRevision;
     const compactHint = el.getBoundingClientRect().width < 145;
     card.classList.toggle('xcb-console-compact-hint', compactHint);
     const hintText = compactHint ? `${page + 1}/3` : `${t('swipe')} · ${page + 1}/3`;
-    card.innerHTML = `<div class="xcb-console-track" style="transform:translateX(-${page * 33.333}%)"><section class="xcb-console-page"><small>${escape(t('fullTranslation'))}</small>${escape(translation || t('emptyTranslation'))}</section><section class="xcb-console-page"><small>${escape(t('toneNotes'))}</small>${escape(notes || t('emptyNotes'))}</section><section class="xcb-console-page"><small>${escape(t('original'))}</small>${escape(record.text)}</section></div><span class="xcb-console-hint">${escape(hintText)}</span>`;
+    card.innerHTML = `<div class="xcb-console-track" style="transform:translateX(-${page * 33.333}%)"><section class="xcb-console-page"><small>${escape(t('fullTranslation'))}</small>${escape(translation || t('emptyTranslation'))}</section><section class="xcb-console-page"><small>${escape(t('original'))}</small>${escape(record.text)}</section><section class="xcb-console-page"><small>${escape(t('toneNotes'))}</small>${escape(notes || t('emptyNotes'))}</section></div><span class="xcb-console-hint">${messageTime ? `<span class="xcb-console-message-time">${escape(messageTime)}</span>` : ''}<span class="xcb-console-swipe-hint">${escape(hintText)}</span></span>`;
     let touchStart = null;
     card.ontouchstart = event => { const point = event.changedTouches[0]; touchStart = point ? { x: point.clientX, y: point.clientY } : null; };
     card.ontouchend = event => {
@@ -2014,6 +2073,10 @@
       onerror: () => reject(new Error(t('openaiUserscriptRequired')))
     }));
   };
+  const openaiResponsesUrl = () => {
+    const baseUrl = String(settings.openaiBaseUrl || 'https://api.openai.com/v1').trim().replace(/\/+$/, '');
+    return /\/responses$/i.test(baseUrl) ? baseUrl : `${baseUrl}/responses`;
+  };
   async function refineWithOpenAI(el, record) {
     if (!sessionOpenAIApiKey) throw new Error(t('missingApi', 'OpenAI'));
     const body = {
@@ -2041,7 +2104,7 @@
     };
     let result;
     try {
-      result = await postJsonOutsidePageCsp('https://api.openai.com/v1/responses', {
+      result = await postJsonOutsidePageCsp(openaiResponsesUrl(), {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${sessionOpenAIApiKey}`
       }, body);
@@ -2289,6 +2352,16 @@
     let pendingImport = null;
     const overlay = document.createElement('div'); overlay.className = 'xcb-console-overlay';
     document.body.append(overlay);
+    const isEditableControl = target => target instanceof Element
+      && !!target.closest('input, textarea, select, [contenteditable="true"]');
+    overlay.addEventListener('keydown', event => {
+      if (!isEditableControl(event.target)) return;
+      if ((event.ctrlKey || event.metaKey) && !event.altKey && ['KeyA', 'KeyC', 'KeyV', 'KeyX'].includes(event.code)) {
+        event.stopPropagation();
+      }
+    });
+    ['copy', 'cut', 'paste'].forEach(type => overlay.addEventListener(type, event => event.stopPropagation()));
+    overlay.addEventListener('click', event => event.stopPropagation());
     const records = () => scopedMessageRecords();
     const dataConversationCount = () => {
       const ids = new Set();
@@ -2606,7 +2679,11 @@
         if (geminiKeyInput?.value.trim()) sessionGeminiApiKey = geminiKeyInput.value.trim();
         if (openaiKeyInput?.value.trim()) sessionOpenAIApiKey = openaiKeyInput.value.trim();
         settings.geminiModel = overlay.querySelector('[data-setting="gemini-model"]')?.value || settings.geminiModel;
-        settings.openaiModel = overlay.querySelector('[data-setting="openai-model"]')?.value || settings.openaiModel;
+        settings.openaiBaseUrl = (overlay.querySelector('[data-setting="openai-base-url"]')?.value || settings.openaiBaseUrl || 'https://api.openai.com/v1').trim().replace(/\/+$/, '');
+        const openaiModelPreset = overlay.querySelector('[data-setting="openai-model-preset"]')?.value;
+        settings.openaiModel = openaiModelPreset === 'custom'
+          ? (overlay.querySelector('[data-setting="openai-custom-model"]')?.value.trim() || settings.openaiModel || 'gpt-5.6-luna')
+          : (openaiModelPreset || settings.openaiModel || 'gpt-5.6-luna');
         settings.contextBefore = Number(overlay.querySelector('[data-setting="before"]')?.value ?? settings.contextBefore);
         settings.contextAfter = Number(overlay.querySelector('[data-setting="after"]')?.value ?? settings.contextAfter);
         settings.includeQuote = !!overlay.querySelector('[data-setting="include-quote"]')?.checked;
@@ -2614,6 +2691,10 @@
         if (rememberKey) settings.rememberApiKey = !!rememberKey.checked;
         if (settings.rememberApiKey && sessionGeminiApiKey) localStorage.setItem(GEMINI_API_KEY_KEY, sessionGeminiApiKey);
         else localStorage.removeItem(GEMINI_API_KEY_KEY);
+        const rememberOpenAIKey = overlay.querySelector('[data-setting="remember-openai-key"]');
+        if (rememberOpenAIKey) settings.rememberOpenAIKey = !!rememberOpenAIKey.checked;
+        if (settings.rememberOpenAIKey && sessionOpenAIApiKey) localStorage.setItem(OPENAI_API_KEY_KEY, sessionOpenAIApiKey);
+        else localStorage.removeItem(OPENAI_API_KEY_KEY);
       }
       if (tab === 'vocabulary') {
         vocabularyDraft = {
@@ -2761,9 +2842,11 @@
       }
       if (tab === 'api') {
         const countOptions = value => [0, 1, 2, 3].map(number => `<option value="${number}" ${Number(value) === number ? 'selected' : ''}>${number === 0 ? escape(t('none')) : escape(t('messages', number))}</option>`).join('');
+        const openaiModelPresets = ['gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6'];
+        const usesCustomOpenAIModel = !openaiModelPresets.includes(settings.openaiModel);
         const providerSwitch = `<div class="xcb-console-field"><span>${escape(t('apiProvider'))}</span><div class="xcb-console-direction-switch"><button data-api-provider="gemini" class="${settings.apiProvider === 'gemini' ? 'active' : ''}">${escape(t('geminiProvider'))}</button><button data-api-provider="openai" class="${settings.apiProvider === 'openai' ? 'active' : ''}">${escape(t('openaiProvider'))}</button></div></div>`;
         const providerFields = settings.apiProvider === 'openai'
-          ? `<label class="xcb-console-field"><span>${escape(t('openaiApiKey'))}</span><input data-setting="openai-key" type="password" autocomplete="off" placeholder="${escape(sessionOpenAIApiKey ? t('apiConfigured') : t('apiPaste'))}"></label><p class="xcb-console-muted">${escape(t('openaiWarning'))}</p><label class="xcb-console-field"><span>${escape(t('model'))}</span><select data-setting="openai-model"><option value="gpt-5.6-luna" ${settings.openaiModel === 'gpt-5.6-luna' ? 'selected' : ''}>GPT-5.6 Luna</option><option value="gpt-5.6-terra" ${settings.openaiModel === 'gpt-5.6-terra' ? 'selected' : ''}>GPT-5.6 Terra</option><option value="gpt-5.6" ${settings.openaiModel === 'gpt-5.6' ? 'selected' : ''}>GPT-5.6 Sol</option></select></label>`
+          ? `<label class="xcb-console-field"><span>${escape(t('openaiApiKey'))}</span><input data-setting="openai-key" type="password" autocomplete="off" placeholder="${escape(sessionOpenAIApiKey ? t('apiConfigured') : t('apiPaste'))}"></label><label class="xcb-console-toggle"><span>${escape(t('rememberHere'))}</span><input data-setting="remember-openai-key" type="checkbox" ${settings.rememberOpenAIKey ? 'checked' : ''}></label><p class="xcb-console-muted">${escape(t('openaiWarning'))}</p><label class="xcb-console-field"><span>${escape(t('openaiBaseUrl'))}</span><input data-setting="openai-base-url" type="url" inputmode="url" value="${escape(settings.openaiBaseUrl || 'https://api.openai.com/v1')}" placeholder="https://api.openai.com/v1"></label><label class="xcb-console-field"><span>${escape(t('model'))}</span><select data-setting="openai-model-preset"><option value="gpt-5.6-luna" ${settings.openaiModel === 'gpt-5.6-luna' ? 'selected' : ''}>GPT-5.6 Luna</option><option value="gpt-5.6-terra" ${settings.openaiModel === 'gpt-5.6-terra' ? 'selected' : ''}>GPT-5.6 Terra</option><option value="gpt-5.6" ${settings.openaiModel === 'gpt-5.6' ? 'selected' : ''}>GPT-5.6 Sol</option><option value="custom" ${usesCustomOpenAIModel ? 'selected' : ''}>${escape(t('customModel'))}</option></select></label><label class="xcb-console-field" data-openai-custom-model-field ${usesCustomOpenAIModel ? '' : 'hidden'}><span>${escape(t('customModel'))}</span><input data-setting="openai-custom-model" value="${escape(usesCustomOpenAIModel ? settings.openaiModel : '')}" placeholder="model-name"></label>`
           : `<label class="xcb-console-field"><span>${escape(t('apiKey'))}</span><input data-setting="gemini-key" type="password" autocomplete="off" placeholder="${escape(sessionGeminiApiKey ? t('apiConfigured') : t('apiPaste'))}"></label><label class="xcb-console-toggle"><span>${escape(t('rememberHere'))}</span><input data-setting="remember-key" type="checkbox" ${settings.rememberApiKey ? 'checked' : ''}></label><p class="xcb-console-muted">${escape(t('apiWarning'))}</p><label class="xcb-console-field"><span>${escape(t('model'))}</span><select data-setting="gemini-model"><option value="gemini-3.1-flash-lite" ${settings.geminiModel === 'gemini-3.1-flash-lite' ? 'selected' : ''}>Gemini 3.1 Flash-Lite</option><option value="gemini-3.5-flash" ${settings.geminiModel === 'gemini-3.5-flash' ? 'selected' : ''}>Gemini 3.5 Flash</option></select></label>`;
         panel = `<div class="xcb-console-panel">${providerSwitch}${providerFields}<label class="xcb-console-field"><span>${escape(t('contextBefore'))}</span><select data-setting="before">${countOptions(settings.contextBefore)}</select></label><label class="xcb-console-field"><span>${escape(t('contextAfter'))}</span><select data-setting="after">${countOptions(settings.contextAfter)}</select></label><label class="xcb-console-toggle"><span>${escape(t('includeQuote'))}</span><input data-setting="include-quote" type="checkbox" ${settings.includeQuote ? 'checked' : ''}></label></div>`;
       }
@@ -2831,12 +2914,19 @@
         saveSettings();
         render();
       });
+      const openaiModelPreset = overlay.querySelector('[data-setting="openai-model-preset"]');
+      if (openaiModelPreset) openaiModelPreset.onchange = () => {
+        const customField = overlay.querySelector('[data-openai-custom-model-field]');
+        if (!customField) return;
+        customField.hidden = openaiModelPreset.value !== 'custom';
+        if (!customField.hidden) customField.querySelector('input')?.focus();
+      };
       overlay.querySelector('.xcb-console-master').onclick = () => window.__xcbConsoleCleanup?.();
       const closeOverlay = () => {
         overlay.remove();
       };
       overlay.querySelector('.xcb-console-cancel').onclick = closeOverlay;
-      overlay.querySelector('.xcb-console-done').onclick = () => { capture(); refreshVisible(); closeOverlay(); };
+      overlay.querySelector('.xcb-console-done').onclick = () => { capture(); saveSettings(); refreshVisible(); closeOverlay(); };
       overlay.querySelectorAll('[data-copy-organized]').forEach(button => button.onclick = async () => {
         const text = organizedCopyText(button.dataset.copyOrganized);
         if (!text) {
@@ -3077,10 +3167,6 @@
         }
       });
     };
-    overlay.onclick = event => {
-      if (event.target !== overlay) return;
-      overlay.remove();
-    };
     render();
   }
   const settingsButton = document.createElement('button');
@@ -3246,24 +3332,55 @@
     }
     return result;
   }
+  const AUTO_BATCH_LIMIT = 24;
+  const AUTO_SCAN_MIN_GAP = 320;
   let autoTimer;
+  let autoDueAt = 0;
+  let lastAutoScanAt = 0;
+  let autoRunInFlight = false;
+  let autoRerunRequested = false;
   const scheduleAutoTranslation = (delay = 350) => {
     if (!settings.masterEnabled) return;
     // X mutates the conversation DOM constantly. Resetting this timer for every
-    // mutation can starve translation forever, so keep the earliest queued run.
-    if (autoTimer) return;
-    autoTimer = setTimeout(() => {
+    // mutation can starve translation forever. Keep the earliest due run while
+    // enforcing a small gap so continuous scrolling cannot start overlapping scans.
+    const now = Date.now();
+    const wait = Math.max(delay, lastAutoScanAt + AUTO_SCAN_MIN_GAP - now, 0);
+    const dueAt = now + wait;
+    if (autoTimer && autoDueAt <= dueAt) return;
+    clearTimeout(autoTimer);
+    autoDueAt = dueAt;
+    autoTimer = setTimeout(async () => {
       autoTimer = null;
-      autoTranslateVisible();
-    }, delay);
+      autoDueAt = 0;
+      if (autoRunInFlight) {
+        autoRerunRequested = true;
+        return;
+      }
+      autoRunInFlight = true;
+      lastAutoScanAt = Date.now();
+      try {
+        await autoTranslateVisible();
+      } catch (error) {
+        console.warn('X Context Bridge background scan failed', error);
+      } finally {
+        autoRunInFlight = false;
+        if (autoRerunRequested) {
+          autoRerunRequested = false;
+          scheduleAutoTranslation(120);
+        }
+      }
+    }, wait);
   };
   async function autoTranslateVisible() {
     if (!settings.masterEnabled) return;
     const visible = [...document.querySelectorAll(selector)].map((el, index) => ({ el, record: recordFor(el, index) }));
     visible.forEach(({ el, record }) => draw(el, record));
-    const recoveredQuotes = Object.values(state.messages).filter(record => record.quoteOnly).map(record => ({ el: null, record }));
-    const savedCollections = Object.values(state.messages).filter(record => record.todo || record.note).map(record => ({ el: null, record }));
-    const candidatesById = new Map([...visible, ...recoveredQuotes, ...savedCollections].map(item => [item.record.id, item]));
+    const backgroundRecords = [];
+    for (const record of Object.values(state.messages)) {
+      if (record.quoteOnly || record.todo || record.note) backgroundRecords.push({ el: null, record });
+    }
+    const candidatesById = new Map([...visible, ...backgroundRecords].map(item => [item.record.id, item]));
     const untranslated = [...candidatesById.values()].filter(({ record }) => settings.enabled && translationEligible(record) && !activeTranslation(record));
     const pending = untranslated.filter(({ record }) => canAutoAttempt(record));
     if (!pending.length) {
@@ -3273,10 +3390,12 @@
     }
     const requestedTarget = directionTarget();
     const requestedGoogleTarget = targetLanguageFor(requestedTarget);
-    const pendingRequests = pending.map(item => ({
+    const allPendingRequests = pending.map(item => ({
       ...item,
       direction: directionForTarget(item.record, requestedTarget)
     })).filter(item => item.direction);
+    const pendingRequests = allPendingRequests.slice(0, AUTO_BATCH_LIMIT);
+    const hasMorePending = allPendingRequests.length > pendingRequests.length;
     pendingRequests.forEach(({ record, direction }) => beginAutoAttempt(record, false, direction)); save();
     try {
       const translations = await translateBatch(pendingRequests.map(({ record }) => record.text), requestedGoogleTarget);
@@ -3295,6 +3414,7 @@
       });
       save();
       refreshQuotePreviews();
+      if (hasMorePending) scheduleAutoTranslation(420);
       if (failed.length && failed.some(canRetryLater)) scheduleAutoTranslation(retryDelay(failed));
     } catch (error) {
       console.warn('Google translation failed', error);
@@ -3305,11 +3425,64 @@
   document.addEventListener('contextmenu', onContext, true);
   if (touch) document.addEventListener('click', onTouchClick, true);
   document.addEventListener('keydown', onKeyDown, true);
-  const onViewportChange = () => positionSettingsButton();
+  const onVisibilityPersist = () => { if (document.visibilityState === 'hidden') flushSave(); };
+  const onPageHide = () => flushSave();
+  document.addEventListener('visibilitychange', onVisibilityPersist);
+  window.addEventListener('pagehide', onPageHide);
+  let positionFrame = 0;
+  const scheduleSettingsButtonPosition = () => {
+    if (positionFrame) return;
+    positionFrame = requestAnimationFrame(() => {
+      positionFrame = 0;
+      positionSettingsButton();
+    });
+  };
+  const onViewportChange = () => {
+    layoutRevision += 1;
+    scheduleSettingsButtonPosition();
+    refreshVisible();
+  };
   window.addEventListener('resize', onViewportChange, { passive: true });
-  const onPageScroll = () => scheduleAutoTranslation(150);
+  const onPageScroll = () => scheduleAutoTranslation(220);
   document.addEventListener('scroll', onPageScroll, { capture: true, passive: true });
-  const pageObserver = new MutationObserver(() => { scheduleAutoTranslation(); positionSettingsButton(); });
+  const ownUiSelector = '.xcb-console-card,.xcb-console-overlay,.xcb-console-entry';
+  const entryHostSelector = '[data-testid="dm-conversation-header"],[data-testid="dm-conversation-more-button"],[data-testid="dm-conversation-panel"],[data-testid="dm-container"],[data-testid="dm-composer-container"]';
+  const elementForMutationNode = node => node?.nodeType === Node.ELEMENT_NODE ? node : node?.parentElement;
+  const isOwnMutationNode = node => {
+    const element = elementForMutationNode(node);
+    return Boolean(element?.matches?.(ownUiSelector) || element?.closest?.(ownUiSelector));
+  };
+  const mutationNodes = mutation => [...mutation.addedNodes, ...mutation.removedNodes];
+  const mutationAffectsMessages = mutation => {
+    const nodes = mutationNodes(mutation);
+    if (nodes.length && nodes.every(isOwnMutationNode)) return false;
+    const target = elementForMutationNode(mutation.target);
+    if (target?.closest?.(ownUiSelector)) return false;
+    if (target?.closest?.(selector)) return true;
+    return nodes.some(node => {
+      const element = elementForMutationNode(node);
+      return Boolean(element?.matches?.(selector) || element?.querySelector?.(selector));
+    });
+  };
+  const mutationAffectsEntry = mutation => mutationNodes(mutation).some(node => {
+    const element = elementForMutationNode(node);
+    return Boolean(element?.matches?.(entryHostSelector) || element?.querySelector?.(entryHostSelector));
+  }) || Boolean(elementForMutationNode(mutation.target)?.closest?.('[data-testid="dm-conversation-header"]'))
+    || (mutation.type === 'attributes' && elementForMutationNode(mutation.target)?.matches?.(entryHostSelector));
+  const pageObserver = new MutationObserver(mutations => {
+    let messagesChanged = false;
+    let entryChanged = false;
+    for (const mutation of mutations) {
+      if (!messagesChanged && mutationAffectsMessages(mutation)) messagesChanged = true;
+      if (!entryChanged && mutationAffectsEntry(mutation)) entryChanged = true;
+      if (messagesChanged && entryChanged) break;
+    }
+    if (messagesChanged) scheduleAutoTranslation();
+    if (entryChanged) {
+      captureConversation();
+      scheduleSettingsButtonPosition();
+    }
+  });
   pageObserver.observe(document.body, { childList: true, subtree: true, characterData: true, attributes: true, attributeFilter: ['data-testid'] });
   captureConversation();
   if (settings.masterEnabled) {
@@ -3352,14 +3525,19 @@
   window.__xcbConsoleLastVersion = VERSION;
   window.__xcbConsoleFactoryReset = () => {
     if (!confirm(t('factoryConfirm'))) return;
+    clearTimeout(saveTimer);
+    saveTimer = 0;
+    stateDirty = false;
     localStorage.removeItem(KEY);
     localStorage.removeItem(SETTINGS_KEY);
     localStorage.removeItem(GEMINI_API_KEY_KEY);
+    localStorage.removeItem(OPENAI_API_KEY_KEY);
     localStorage.removeItem(NOTION_SECRET_KEY);
     window.__xcbConsoleCleanup?.();
     location.reload();
   };
   window.__xcbConsoleCleanup = () => {
+    flushSave();
     document.removeEventListener('contextmenu', onContext, true);
     document.removeEventListener('click', onTouchClick, true);
     document.removeEventListener('keydown', onKeyDown, true);
@@ -3367,10 +3545,16 @@
     document.removeEventListener('pointermove', moveEntryDrag, true);
     document.removeEventListener('pointerup', finishEntryDrag, true);
     document.removeEventListener('pointercancel', finishEntryDrag, true);
+    document.removeEventListener('visibilitychange', onVisibilityPersist);
+    window.removeEventListener('pagehide', onPageHide);
     window.removeEventListener('resize', onViewportChange);
     pageObserver.disconnect();
+    cancelAnimationFrame(positionFrame);
+    positionFrame = 0;
     clearTimeout(autoTimer);
     autoTimer = null;
+    autoDueAt = 0;
+    autoRerunRequested = false;
     clearTimeout(notionAutoTimer);
     restoreAllXcbDom();
     document.getElementById(STYLE_ID)?.remove();
