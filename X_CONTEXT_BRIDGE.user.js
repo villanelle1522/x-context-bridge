@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Context Bridge
 // @namespace    https://github.com/villanelle1522/x-context-bridge
-// @version      0.10.12-test
+// @version      0.10.22-test
 // @description  X 私訊翻譯、待做、筆記、單字本、搜尋與 Notion 跨裝置同步
 // @match        https://x.com/messages*
 // @match        https://x.com/messages/*
@@ -11,8 +11,13 @@
 // @match        https://twitter.com/messages/*
 // @match        https://twitter.com/i/chat*
 // @match        https://twitter.com/i/chat/*
+// @match        https://chatgpt.com/*
+// @match        https://chat.openai.com/*
 // @run-at       document-idle
 // @grant        GM_xmlhttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
+// @grant        GM_deleteValue
 // @connect      api.openai.com
 // @connect      *
 // @connect      generativelanguage.googleapis.com
@@ -27,11 +32,181 @@
  Remove it with: window.__xcbConsoleCleanup()
 */
 (() => {
-  const VERSION = '0.10.12-test';
+  const VERSION = '0.10.22-test';
   const NOTION_SYNC_EPOCH = 2;
   const STYLE_ID = 'xcb-console-style';
+  const CALENDAR_LIVE_STYLE_ID = 'xcb-console-calendar-live-style';
   const PAUSE_STYLE_ID = 'xcb-test-clean-style';
   const NOTION_HOME_URL = 'https://www.notion.so';
+
+  // X and ChatGPT exchange a context packet through userscript storage. The
+  // URL hash selects the request; window.name remains only as a legacy fallback.
+  const CHATGPT_WEB_PREFIX = 'XCB_CHATGPT_WEB_V1:';
+  const CHATGPT_RESULT_PREFIX = 'XCB_CHATGPT_RESULT_V1:';
+  const CHATGPT_REQUEST_STORE_PREFIX = 'xcb-chatgpt-request:';
+  const CHATGPT_RESULT_STORE_PREFIX = 'xcb-chatgpt-result:';
+  const CHATGPT_LATEST_REQUEST_KEY = 'xcb-chatgpt-latest-request';
+  const CHATGPT_WEB_HOST = /(^|\.)chatgpt\.com$|(^|\.)chat\.openai\.com$/i;
+  const chatGPTStoreGet = key => {
+    try { return typeof GM_getValue === 'function' ? GM_getValue(key, null) : null; } catch { return null; }
+  };
+  const chatGPTStoreSet = (key, value) => {
+    try {
+      if (typeof GM_setValue !== 'function') return false;
+      GM_setValue(key, value);
+      return true;
+    } catch { return false; }
+  };
+  const chatGPTStoreDelete = key => {
+    try { if (typeof GM_deleteValue === 'function') GM_deleteValue(key); } catch {}
+  };
+  const chatGPTBridgeToast = message => {
+    document.querySelector('.xcb-chatgpt-bridge-toast')?.remove();
+    const toast = document.createElement('div');
+    toast.className = 'xcb-chatgpt-bridge-toast';
+    toast.textContent = message;
+    toast.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:2147483647;max-width:min(420px,calc(100vw - 36px));padding:12px 14px;border:1px solid #536471;border-radius:12px;color:#fff;background:#202327;box-shadow:0 10px 35px #0008;font:14px/1.4 system-ui,sans-serif;white-space:pre-wrap';
+    document.body?.append(toast);
+    setTimeout(() => toast.remove(), 7000);
+  };
+  const initChatGPTWebBridge = () => {
+    const hash = new URLSearchParams(location.hash.replace(/^#/, ''));
+    const requestId = hash.get('xcb-request') || '';
+    const inlinePacket = hash.get('xcb-packet') || '';
+    const namedPacket = String(window.name || '');
+    const latestRequestId = String(chatGPTStoreGet(CHATGPT_LATEST_REQUEST_KEY) || '');
+    let packet = null;
+    try {
+      if (namedPacket.startsWith(CHATGPT_WEB_PREFIX)) packet = JSON.parse(namedPacket.slice(CHATGPT_WEB_PREFIX.length));
+      else if (requestId) packet = chatGPTStoreGet(`${CHATGPT_REQUEST_STORE_PREFIX}${requestId}`);
+      else if (inlinePacket) packet = JSON.parse(inlinePacket);
+      else if (latestRequestId) packet = chatGPTStoreGet(`${CHATGPT_REQUEST_STORE_PREFIX}${latestRequestId}`);
+      if (typeof packet === 'string') packet = JSON.parse(packet);
+    } catch { packet = null; }
+    if (!packet?.requestId || !packet?.prompt) return;
+    if (packet.createdAt && Date.now() - packet.createdAt > 300000) {
+      chatGPTStoreDelete(`${CHATGPT_REQUEST_STORE_PREFIX}${packet.requestId}`);
+      if (latestRequestId === packet.requestId) chatGPTStoreDelete(CHATGPT_LATEST_REQUEST_KEY);
+      return;
+    }
+    const runKey = `xcb-chatgpt-running:${packet.requestId}`;
+    if (sessionStorage.getItem(runKey) === 'true') return;
+    sessionStorage.setItem(runKey, 'true');
+    window.name = '';
+    if (requestId || inlinePacket) history.replaceState(history.state, '', `${location.pathname}${location.search}`);
+    const post = (type, extra = {}) => {
+      const message = { source: 'xcb-chatgpt-web', type, requestId: packet.requestId, recordId: packet.recordId, ...extra };
+      chatGPTStoreSet(`${CHATGPT_RESULT_STORE_PREFIX}${packet.requestId}`, message);
+      chatGPTStoreDelete(`${CHATGPT_REQUEST_STORE_PREFIX}${packet.requestId}`);
+      if (chatGPTStoreGet(CHATGPT_LATEST_REQUEST_KEY) === packet.requestId) chatGPTStoreDelete(CHATGPT_LATEST_REQUEST_KEY);
+      sessionStorage.setItem(runKey, 'complete');
+      try { window.name = `${CHATGPT_RESULT_PREFIX}${JSON.stringify(message)}`; } catch {}
+      try { window.opener?.postMessage(message, '*'); } catch {}
+    };
+    const waitFor = (getter, timeout = 40000) => new Promise((resolve, reject) => {
+      const startedAt = Date.now();
+      const observer = new MutationObserver(() => {
+        const value = getter();
+        if (value) { observer.disconnect(); clearInterval(timer); resolve(value); }
+      });
+      const timer = setInterval(() => {
+        const value = getter();
+        if (value) { observer.disconnect(); clearInterval(timer); resolve(value); }
+        else if (Date.now() - startedAt > timeout) { observer.disconnect(); clearInterval(timer); reject(new Error('ChatGPT input not found')); }
+      }, 200);
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+      const initial = getter();
+      if (initial) { observer.disconnect(); clearInterval(timer); resolve(initial); }
+    });
+    const isVisible = node => !!node && !node.hidden && !!node.getClientRects().length;
+    const promptInput = () => [...document.querySelectorAll('#prompt-textarea, [data-testid="prompt-textarea"], textarea[data-testid="text-input"], textarea[placeholder*="Message"], textarea[placeholder*="訊息"], form div[contenteditable="true"], main div[contenteditable="true"][role="textbox"]')].find(isVisible) || null;
+    const sendButton = () => [...document.querySelectorAll('button[data-testid="send-button"], button[aria-label*="Send"], button[aria-label*="傳送"], button[aria-label*="发送"], button[aria-label*="보내기"]')]
+      .find(button => isVisible(button) && !button.disabled) || null;
+    const generationActive = () => [...document.querySelectorAll('button[data-testid="stop-button"], button[aria-label*="Stop"], button[aria-label*="停止"], button[aria-label*="중지"]')].some(isVisible);
+    const assistantTexts = () => {
+      let nodes = [...document.querySelectorAll('[data-message-author-role="assistant"]')];
+      if (!nodes.length) nodes = [...document.querySelectorAll('article[data-testid^="conversation-turn-"]')];
+      return nodes.map(node => {
+        const content = node.querySelector('.markdown, [class*="markdown"], [data-message-content]') || node;
+        return String(content.innerText || content.textContent || '').trim();
+      }).filter(Boolean);
+    };
+    const inputText = input => String(input instanceof HTMLTextAreaElement ? input.value : (input.innerText || input.textContent || '')).trim();
+    const setPrompt = (input, prompt) => {
+      input.focus();
+      if (input instanceof HTMLTextAreaElement) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
+        if (setter) setter.call(input, prompt); else input.value = prompt;
+        input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: prompt }));
+        input.dispatchEvent(new Event('change', { bubbles: true }));
+        return;
+      }
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(input);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      let inserted = false;
+      try { inserted = document.execCommand('insertText', false, prompt); } catch {}
+      if (!inserted || !inputText(input)) input.textContent = prompt;
+      input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: prompt }));
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    const send = async input => {
+      const button = await waitFor(sendButton, 10000).catch(() => null);
+      if (button) {
+        button.click();
+        await new Promise(resolve => setTimeout(resolve, 500));
+        return generationActive() || !inputText(input);
+      }
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
+      input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
+      await new Promise(resolve => setTimeout(resolve, 500));
+      return generationActive() || !inputText(input);
+    };
+    const watchResponse = baseline => {
+      let last = '';
+      let stableSince = 0;
+      const startedAt = Date.now();
+      const timer = setInterval(() => {
+        const messages = assistantTexts();
+        const candidate = messages.at(-1) || '';
+        const isNew = candidate && (messages.length > baseline.length || candidate !== baseline.at(-1));
+        if (isNew && candidate !== last) { last = candidate; stableSince = Date.now(); }
+        if (isNew && candidate && stableSince && !generationActive() && Date.now() - stableSince > 1800) {
+          clearInterval(timer);
+          post('result', { text: candidate });
+          chatGPTBridgeToast('X Context Bridge：ChatGPT 回覆已回傳。');
+        } else if (Date.now() - startedAt > 180000) {
+          clearInterval(timer);
+          post('error', { message: 'ChatGPT response timeout' });
+          chatGPTBridgeToast('X Context Bridge：等待 ChatGPT 回覆逾時。');
+        }
+      }, 400);
+    };
+    (async () => {
+      const input = await waitFor(promptInput);
+      const baseline = assistantTexts();
+      const prompt = String(packet.prompt || '');
+      setPrompt(input, prompt);
+      await new Promise(resolve => setTimeout(resolve, 250));
+      if (!inputText(input)) {
+        setPrompt(input, prompt);
+        await new Promise(resolve => setTimeout(resolve, 250));
+      }
+      if (!inputText(input)) throw new Error('ChatGPT prompt could not be inserted');
+      chatGPTBridgeToast('X Context Bridge：已填入 prompt，正在自動送出。');
+      if (!(await send(input))) throw new Error('ChatGPT send button did not respond');
+      watchResponse(baseline);
+    })().catch(error => {
+      post('error', { message: error.message });
+      chatGPTBridgeToast(`X Context Bridge：${error.message}`);
+    });
+  };
+  if (CHATGPT_WEB_HOST.test(location.hostname)) {
+    initChatGPTWebBridge();
+    return;
+  }
   window.__xcbConsoleCleanup?.();
   document.getElementById(PAUSE_STYLE_ID)?.remove();
   delete window.__xcbConsoleRestoreExtension;
@@ -83,6 +258,7 @@
   state.branches ||= {};
   state.vocabulary ||= {};
   state.conversations ||= {};
+  state.calendarIndex ||= {};
   const settings = Object.assign({
     masterEnabled: true,
     enabled: true,
@@ -130,6 +306,7 @@
   }
   const UI = {
     zh: {
+      sendToChatGPT: 'ChatGPT 自動處理', chatGPTOpening: '已開啟 ChatGPT，正在自動送出…', chatGPTCopied: '已複製 prompt；請貼到 ChatGPT。', chatGPTFailed: 'ChatGPT 自動處理失敗，prompt 已複製。', chatGPTResult: 'ChatGPT 回覆已套用',
       translation: '翻譯', todo: '待做', personNote: '筆記', vocabulary: '單字本', data: '搜尋／備份', api: 'API',
       autoTranslation: '自動顯示翻譯', direction: '翻譯方向', sourceLanguage: '來源語言', targetLanguageSetting: '譯文語言',
       koZh: '한국어 → 繁體中文', zhKo: '繁體中文 → 한국어',
@@ -161,6 +338,8 @@
       locateInX: '在 X 中定位', locatingInX: '正在開啟 X 訊息搜尋…',
       xSearchUnavailable: '目前版面找不到 X 訊息搜尋；已保存的詳情不受影響。',
       xSearchNoText: '這筆資料沒有可用來搜尋的原文。',
+      xSearchTrying: (current, total) => `正在比對定位訊息 ${current}/${total}…`,
+      xSearchAmbiguous: '找到多筆相同結果，已保留 X 搜尋結果供你選擇。',
       copyDetails: '複製詳情', detailsCopied: '詳情已複製', dataInfo: '資料資訊',
       cachedAt: '快取時間', messageId: '訊息 ID', sourceState: '保存狀態', directCache: '從畫面直接快取',
       messageSearching: progress => `正在尋找 X 訊息… ${progress}%`,
@@ -173,6 +352,12 @@
       quoteAvailabilityUnknown: '引用內容已保留；無法確認原訊息是否刪除', deletedConfirmed: '原訊息已確認刪除',
       searchAll: '搜尋原文、譯文、筆記、標籤與分支…',
       search: '搜尋', clear: '清除', noSearchResults: '找不到相符資料。',
+      conversationCalendar: '對話日曆', calendarDays: count => `${count} 天`, calendarEmpty: '尚未建立日期索引。',
+      calendarPreviousMonth: '上個月', calendarNextMonth: '下個月', calendarJump: date => `定位到 ${date}`,
+      calendarBuild: '掃描舊對話', calendarStop: '停止掃描', calendarScanning: (step, count, oldest) => `正在往回掃描 · 第 ${step} 段 · 已記錄 ${count} 天 · 最早索引 ${oldest ?? '…'}`,
+      calendarBuilt: count => `完成，共記錄 ${count} 天。之後遇到新日期會自動補上。`,
+      calendarStopped: count => `已停止，目前保留 ${count} 天。`, calendarNoScroller: '找不到對話捲軸，請先打開一個私訊對話。',
+      calendarBuildHint: '只需做一次。畫面會自動回捲並快取每天第一則訊息，完成後回到最新訊息。',
       branches: '訊息分支', noBranches: '尚無訊息分支。',
       branchCount: count => `${count} 則訊息`, deleteBranch: '刪除分支',
       branchDeleteConfirm: '刪除這個分支？訊息與翻譯仍會保留。',
@@ -219,7 +404,7 @@
       notionResult: (created, updated, skipped) => `完成：新增 ${created}、更新 ${updated}、略過 ${skipped}。`,
       notionLastSync: (time, count) => `上次備份：${time}（${count} 筆）`,
       notionPending: (count, size) => `準備同步：${count} 筆（約 ${size}）`,
-      notionLegacyHidden: count => `已排除 ${count} 筆舊版位置索引產生的重複記錄。`,
+      notionLegacyHidden: count => `已排除 ${count} 筆舊版位置索引產生的重複記錄；本次不會自動刪除。確認內容已合併後，可在 Notion 手動封存舊頁面。`,
       notionFailed: message => `Notion 備份失敗：${message}`,
       notionExportJson: '下載備份包', notionJsonDownloaded: '備份包已下載',
       backupImport: '匯入備份包', backupImporting: '正在讀取備份…',
@@ -252,6 +437,7 @@
       factoryConfirm: '清除 X Context Bridge 的所有測試譯文、待做、筆記、單字本、設定、API Key 與同步密碼？此動作無法復原。'
     },
     ko: {
+      sendToChatGPT: 'ChatGPT 자동 처리', chatGPTOpening: 'ChatGPT를 열고 자동으로 전송하는 중…', chatGPTCopied: 'prompt를 복사했습니다. ChatGPT에 붙여넣으세요.', chatGPTFailed: 'ChatGPT 자동 처리에 실패하여 prompt를 복사했습니다.', chatGPTResult: 'ChatGPT 응답을 적용했습니다',
       translation: '번역', todo: '할 일', personNote: '메모', vocabulary: '단어장', data: '검색·백업', api: 'API',
       autoTranslation: '번역 자동 표시', direction: '번역 방향', sourceLanguage: '원문 언어', targetLanguageSetting: '번역 언어',
       koZh: '한국어 → 繁體中文', zhKo: '繁體中文 → 한국어',
@@ -283,6 +469,8 @@
       locateInX: 'X에서 찾기', locatingInX: 'X 메시지 검색을 여는 중…',
       xSearchUnavailable: '현재 화면에서 X 메시지 검색을 찾을 수 없습니다. 저장된 상세 정보에는 영향이 없습니다.',
       xSearchNoText: '검색에 사용할 원문이 없습니다.',
+      xSearchTrying: (current, total) => `위치 기준 메시지 비교 중 ${current}/${total}…`,
+      xSearchAmbiguous: '같은 검색 결과가 여러 개 있어 X 검색 결과를 열어 두었습니다.',
       copyDetails: '상세 정보 복사', detailsCopied: '상세 정보 복사됨', dataInfo: '데이터 정보',
       cachedAt: '저장 시간', messageId: '메시지 ID', sourceState: '저장 상태', directCache: '화면에서 직접 저장',
       messageSearching: progress => `X 메시지를 찾는 중… ${progress}%`,
@@ -295,6 +483,12 @@
       quoteAvailabilityUnknown: '인용 내용은 보존됨 · 원문 삭제 여부는 확인할 수 없음', deletedConfirmed: '원문 삭제 확인됨',
       searchAll: '원문·번역·메모·태그·분기 검색…',
       search: '검색', clear: '지우기', noSearchResults: '일치하는 데이터가 없습니다.',
+      conversationCalendar: '대화 달력', calendarDays: count => `${count}일`, calendarEmpty: '날짜 색인이 아직 없습니다.',
+      calendarPreviousMonth: '이전 달', calendarNextMonth: '다음 달', calendarJump: date => `${date}로 이동`,
+      calendarBuild: '이전 대화 스캔', calendarStop: '스캔 중지', calendarScanning: (step, count, oldest) => `이전 대화를 스캔하는 중 · ${step}번째 구간 · ${count}일 저장 · 가장 오래된 색인 ${oldest ?? '…'}`,
+      calendarBuilt: count => `완료 · ${count}일 저장됨. 새 날짜는 이후 자동으로 추가됩니다.`,
+      calendarStopped: count => `중지됨 · 현재 ${count}일을 보관했습니다.`, calendarNoScroller: '대화 스크롤 영역을 찾지 못했습니다. 먼저 DM 대화를 열어 주세요.',
+      calendarBuildHint: '한 번만 실행하면 됩니다. 자동으로 위로 이동하며 매일 첫 메시지를 저장한 뒤 최신 메시지로 돌아옵니다.',
       branches: '메시지 분기', noBranches: '메시지 분기가 없습니다.',
       branchCount: count => `메시지 ${count}개`, deleteBranch: '분기 삭제',
       branchDeleteConfirm: '이 분기를 삭제할까요? 메시지와 번역은 유지됩니다.',
@@ -341,7 +535,7 @@
       notionResult: (created, updated, skipped) => `완료: 새 항목 ${created}개, 업데이트 ${updated}개, 변경 없음 ${skipped}개.`,
       notionLastSync: (time, count) => `마지막 백업: ${time} (${count}개)`,
       notionPending: (count, size) => `동기화 준비: ${count}개 (약 ${size})`,
-      notionLegacyHidden: count => `이전 위치 기반 ID로 생긴 중복 ${count}개를 백업에서 제외했습니다.`,
+      notionLegacyHidden: count => `이전 위치 기반 ID로 생긴 중복 ${count}개를 백업에서 제외했습니다. 이번 동기화에서 자동 삭제하지 않으며, 내용이 합쳐진 것을 확인한 뒤 Notion에서 직접 보관 처리할 수 있습니다.`,
       notionFailed: message => `Notion 백업 실패: ${message}`,
       notionExportJson: '백업 파일 다운로드', notionJsonDownloaded: '백업 파일 다운로드됨',
       backupImport: '백업 파일 가져오기', backupImporting: '백업을 읽는 중…',
@@ -428,6 +622,11 @@
   const hasEnglish = text => /[A-Za-z]/.test(text) && !hasKorean(text) && !hasChinese(text);
   const escape = value => String(value || '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#039;' })[c]);
   const currentConversationId = () => location.pathname;
+  const conversationIdentity = value => {
+    const path = String(value || '').split(/[?#]/, 1)[0].replace(/\/+$/, '');
+    const match = path.match(/^\/(?:i\/chat|messages)\/(.+)$/);
+    return match?.[1] || '';
+  };
   const conversationFallback = id => String(id || '').split('/').filter(Boolean).pop() || t('conversationUnknown');
   const captureConversation = () => {
     const id = currentConversationId();
@@ -532,6 +731,10 @@
     if (immediate) { flushSave(); return; }
     if (!saveTimer) saveTimer = setTimeout(flushSave, 280);
   };
+  const saveLocalMetadata = () => {
+    stateDirty = true;
+    if (!saveTimer) saveTimer = setTimeout(flushSave, 280);
+  };
   const saveSettings = () => localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   const messageTextIndex = new Map();
   const indexedTextById = new Map();
@@ -624,7 +827,14 @@
     .filter(Boolean)
     .slice(0, 30))];
   const branchRecords = () => Object.values(state.branches || {}).sort((a, b) => String(b.updatedAt || '').localeCompare(String(a.updatedAt || '')));
-  const inDataScope = item => settings.dataScope === 'all' || !item?.conversationId || item.conversationId === currentConversationId();
+  const sameConversation = (left, right) => {
+    const leftIdentity = conversationIdentity(left);
+    const rightIdentity = conversationIdentity(right);
+    return leftIdentity && rightIdentity
+      ? leftIdentity === rightIdentity
+      : String(left || '') === String(right || '');
+  };
+  const inDataScope = item => settings.dataScope === 'all' || !item?.conversationId || sameConversation(item.conversationId, currentConversationId());
   const scopedMessageRecords = () => Object.values(state.messages || {}).filter(inDataScope);
   const scopedBranchRecords = () => branchRecords().filter(inDataScope);
   const branchesForRecord = record => (record.branchIds || []).map(id => state.branches[id]).filter(Boolean);
@@ -673,13 +883,18 @@
   const vocabularyRecords = () => Object.values(state.vocabulary || {})
     .sort((a, b) => String(b.updatedAt || b.createdAt || '').localeCompare(String(a.updatedAt || a.createdAt || '')));
   const vocabularyTopic = entry => String(entry.topic || '').trim() || t('vocabularyUnsorted');
-  const vocabularySearchText = entry => [
+  const normalizeSearchText = value => String(value || '')
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/\s+/g, ' ')
+    .trim();
+  const vocabularySearchText = entry => normalizeSearchText([
     entry.word,
     entry.meaning,
     entry.pronunciation,
     entry.topic
-  ].filter(Boolean).join('\n').toLocaleLowerCase();
-  const recordSearchText = record => [
+  ].filter(Boolean).join('\n'));
+  const recordSearchText = record => normalizeSearchText([
     record.text,
     record.translation,
     record.notes,
@@ -696,7 +911,7 @@
     ...Object.values(record.notesByDirection || {}),
     ...(record.tags || []),
     ...branchesForRecord(record).map(branch => branch.title)
-  ].filter(Boolean).join('\n').toLocaleLowerCase();
+  ].filter(Boolean).join('\n'));
   const organizedCopyText = section => {
     const lines = [];
     const addDetail = (label, value) => {
@@ -841,6 +1056,7 @@
   const hasStableMessageId = record => /^message-text-/.test(record.nativeTestId || '');
   const hasUserMaterial = record => Boolean(
     record.manualEntry || record.todo || record.note || record.notes ||
+    record.translation || Object.values(record.translations || {}).some(Boolean) ||
     Object.values(record.notesByDirection || {}).some(Boolean) ||
     (record.tags || []).length || (record.branchIds || []).length ||
     Object.values(record.translationMeta || {}).some(meta => meta?.source === 'manual')
@@ -1631,6 +1847,125 @@
     if (testId.startsWith('message-text-')) return hash(`${location.pathname}|${testId}`);
     return hash(`${location.pathname}|${textOf(el)}|${index}`);
   };
+  const localDateKey = date => {
+    if (!(date instanceof Date) || Number.isNaN(date.getTime())) return '';
+    const pad = value => String(value).padStart(2, '0');
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+  };
+  const parseDateDivider = value => {
+    const label = String(value || '').replace(/\s+/g, ' ').trim();
+    if (!label) return '';
+    const today = new Date();
+    today.setHours(12, 0, 0, 0);
+    if (/^(today|今天|오늘)$/i.test(label)) return localDateKey(today);
+    if (/^(yesterday|昨天|어제)$/i.test(label)) {
+      today.setDate(today.getDate() - 1);
+      return localDateKey(today);
+    }
+    const explicitYear = /\b\d{4}\b/.test(label);
+    const parsed = new Date(explicitYear ? label : `${label}, ${today.getFullYear()}`);
+    if (Number.isNaN(parsed.getTime())) return '';
+    parsed.setHours(12, 0, 0, 0);
+    if (!explicitYear && parsed.getTime() > today.getTime() + 36 * 60 * 60 * 1000) parsed.setFullYear(parsed.getFullYear() - 1);
+    return localDateKey(parsed);
+  };
+  let dateDividerCache = null;
+  const dateDividerEntries = () => {
+    if (dateDividerCache) return dateDividerCache;
+    dateDividerCache = [...document.querySelectorAll('[data-index]')].map(candidate => {
+      const index = Number(candidate.dataset.index);
+      const label = candidate.querySelector('.mt-4.mb-2.flex.items-center.justify-center .text-center.text-gray-600.text-subtext2.font-medium');
+      return { index, date: label && !label.closest(selector) ? parseDateDivider(label.textContent) : '' };
+    }).filter(entry => Number.isFinite(entry.index) && entry.date).sort((a, b) => a.index - b.index);
+    queueMicrotask(() => { dateDividerCache = null; });
+    return dateDividerCache;
+  };
+  const messageDateInfoOf = el => {
+    const item = el?.closest?.('[data-index]');
+    const itemIndex = Number(item?.dataset?.index);
+    if (!Number.isFinite(itemIndex)) return { date: '', index: null };
+    let nearest = null;
+    for (const entry of dateDividerEntries()) {
+      if (entry.index > itemIndex) break;
+      nearest = entry;
+    }
+    return { date: nearest?.date || '', index: itemIndex };
+  };
+  const calendarConversationKey = value => conversationIdentity(value) || String(value || '');
+  const calendarEntriesFor = (conversationId = currentConversationId()) => {
+    const key = calendarConversationKey(conversationId);
+    if (!key) return {};
+    state.calendarIndex[key] ||= {};
+    return state.calendarIndex[key];
+  };
+  const calendarAnchorScore = record => {
+    const text = String(record?.text || '').replace(/\s+/g, ' ').trim();
+    if (!text) return -1000;
+    const normalized = normalizeSearchText(text);
+    const repeated = recordsForText(text).length;
+    const distinctWords = new Set(normalized.split(/\s+/).filter(Boolean)).size;
+    let score = Math.min(text.length, 120) + Math.min(distinctWords * 4, 32);
+    if (record?.nativeTestId) score += 18;
+    if (repeated <= 1) score += 70;
+    else score -= Math.min(90, (repeated - 1) * 24);
+    if (text.length < 8) score -= 65;
+    if (/^(?:ok(?:ay)?|yes|no|yep|nope|hi|hey|lol|lmao|嗯+|恩+|喔+|哦+|好+|是+|對+|哈哈+|呵呵+|네+|응+|아니+|ㅋㅋ+|ㅎㅎ+|[?!？！，。~…]+)$/iu.test(normalized)) score -= 140;
+    return score;
+  };
+  const calendarAnchorFromRecord = (record, messageIndex) => ({
+    recordId: record.id,
+    messageIndex: messageIndex !== null && messageIndex !== '' && Number.isFinite(Number(messageIndex)) ? Number(messageIndex) : null,
+    nativeTestId: record.nativeTestId || '',
+    text: record.text || '',
+    author: record.author || '',
+    speakerSide: record.speakerSide || 'unknown',
+    messageTime: record.messageTime || '',
+    score: calendarAnchorScore(record),
+    capturedAt: new Date().toISOString()
+  });
+  const calendarAnchorKey = anchor => anchor?.recordId || anchor?.nativeTestId || `${anchor?.messageIndex ?? ''}|${anchor?.text || ''}`;
+  const rememberCalendarRecord = (record, date, messageIndex) => {
+    if (!record?.id || !/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return false;
+    const entries = calendarEntriesFor(record.conversationId);
+    const existing = entries[date] || null;
+    const previousEntry = existing || {};
+    const nextIndex = messageIndex !== null && messageIndex !== '' && Number.isFinite(Number(messageIndex)) ? Number(messageIndex) : null;
+    const existingIndex = existing?.messageIndex !== null && existing?.messageIndex !== '' && Number.isFinite(Number(existing?.messageIndex)) ? Number(existing.messageIndex) : null;
+    const shouldReplace = !existing
+      || (nextIndex !== null && (existingIndex === null || nextIndex < existingIndex))
+      || (existing.recordId === record.id && (existing.text !== record.text || existing.nativeTestId !== record.nativeTestId));
+    const next = { ...previousEntry, date };
+    if (shouldReplace) Object.assign(next, {
+      recordId: record.id,
+      messageIndex: nextIndex,
+      nativeTestId: record.nativeTestId || '',
+      text: record.text || '',
+      capturedAt: new Date().toISOString()
+    });
+
+    // Keep several high-quality anchors for each day. X only exposes keyword
+    // search in this UI, so a long, unique message is a much safer locator than
+    // the day's first message when that message is just "ok" or an emoji.
+    const incoming = calendarAnchorFromRecord(record, nextIndex);
+    const anchorsByKey = new Map();
+    for (const anchor of [...(Array.isArray(previousEntry.anchors) ? previousEntry.anchors : []), incoming]) {
+      if (!anchor?.text) continue;
+      const key = calendarAnchorKey(anchor);
+      const previous = anchorsByKey.get(key);
+      if (!previous || anchor === incoming || Number(anchor.score ?? -1000) > Number(previous.score ?? -1000)) {
+        anchorsByKey.set(key, previous && anchor.recordId === previous.recordId
+          ? { ...anchor, capturedAt: previous.capturedAt || anchor.capturedAt }
+          : anchor);
+      }
+    }
+    next.anchors = [...anchorsByKey.values()]
+      .sort((left, right) => Number(right.score ?? -1000) - Number(left.score ?? -1000)
+        || Number(left.messageIndex ?? Number.MAX_SAFE_INTEGER) - Number(right.messageIndex ?? Number.MAX_SAFE_INTEGER))
+      .slice(0, 5);
+    if (JSON.stringify(next) === JSON.stringify(previousEntry)) return false;
+    entries[date] = next;
+    return true;
+  };
   const findMessage = target => {
     const el = messageContainer(target);
     if (!el) return null;
@@ -1656,9 +1991,249 @@
     if (side !== 'unknown') record.speakerSide = side;
     record.author ||= side === 'self' ? 'self' : side === 'other' ? conversationLabel(record) : '';
     if (!state.conversations[record.conversationId]) captureConversation();
-    if (sanitizeRecord(record, text)) save();
+    const contentChanged = sanitizeRecord(record, text);
+    let metadataChanged = false;
+    const dateInfo = messageDateInfoOf(el);
+    if (dateInfo.date && record.messageDate !== dateInfo.date) { record.messageDate = dateInfo.date; metadataChanged = true; }
+    if (dateInfo.index !== null && record.messageIndex !== dateInfo.index) { record.messageIndex = dateInfo.index; metadataChanged = true; }
+    if (dateInfo.date && rememberCalendarRecord(record, dateInfo.date, dateInfo.index)) metadataChanged = true;
+    if (contentChanged) save();
+    else if (metadataChanged) saveLocalMetadata();
     rememberQuotedMessage(el, record);
     return record;
+  };
+  const calendarIndexCount = (conversationId = currentConversationId()) => Object.keys(calendarEntriesFor(conversationId)).length;
+  const captureVisibleCalendarFirstMessages = () => {
+    const dividers = dateDividerEntries();
+    if (!dividers.length) return 0;
+    const messages = [...document.querySelectorAll(selector)];
+    const indexed = messages.map((el, domIndex) => ({
+      el,
+      domIndex,
+      itemIndex: Number(el.closest('[data-index]')?.dataset?.index)
+    })).filter(item => Number.isFinite(item.itemIndex));
+    for (let dividerIndex = 0; dividerIndex < dividers.length; dividerIndex += 1) {
+      const divider = dividers[dividerIndex];
+      const nextDividerIndex = dividers[dividerIndex + 1]?.index ?? Number.POSITIVE_INFINITY;
+      const dayItems = indexed
+        .filter(item => item.itemIndex > divider.index && item.itemIndex < nextDividerIndex)
+        .sort((left, right) => left.itemIndex - right.itemIndex);
+      for (const item of dayItems) {
+        const record = recordFor(item.el, item.domIndex);
+        let changed = false;
+        if (record.messageDate !== divider.date) { record.messageDate = divider.date; changed = true; }
+        if (record.messageIndex !== item.itemIndex) { record.messageIndex = item.itemIndex; changed = true; }
+        if (rememberCalendarRecord(record, divider.date, item.itemIndex)) changed = true;
+        if (changed) saveLocalMetadata();
+      }
+    }
+    return calendarIndexCount();
+  };
+  let calendarFocusedDate = '';
+  let calendarPreferredMonth = '';
+  const setCalendarFocus = date => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date || '')) return;
+    calendarFocusedDate = date;
+    calendarPreferredMonth = date.slice(0, 7);
+  };
+  const syncCalendarFocusFromViewport = visible => {
+    if (calendarScanTask || !Array.isArray(visible) || !visible.length) return;
+    const viewportCenter = innerHeight / 2;
+    const closest = visible
+      .map(item => {
+        const rect = item.el?.getBoundingClientRect?.();
+        const date = item.record?.messageDate || messageDateInfoOf(item.el).date;
+        return rect && date && rect.bottom >= 0 && rect.top <= innerHeight
+          ? { date, distance: Math.abs((rect.top + rect.bottom) / 2 - viewportCenter) }
+          : null;
+      })
+      .filter(Boolean)
+      .sort((left, right) => left.distance - right.distance)[0];
+    if (closest) setCalendarFocus(closest.date);
+  };
+  let calendarScanTask = null;
+  let calendarScanStopRequested = false;
+  let calendarScanDisposed = false;
+  let calendarScanResume = null;
+  let calendarScanState = { running: false, result: '', count: 0 };
+  let calendarLastProgressAt = 0;
+  const calendarWait = delay => new Promise(resolve => setTimeout(resolve, delay));
+  const calendarNextPaint = () => new Promise(resolve => requestAnimationFrame(resolve));
+  const calendarWindowChanged = (before, after) => before.size !== after.size || [...after].some(key => !before.has(key));
+  const mountedMessageIndexRange = () => {
+    const indices = [...document.querySelectorAll(`${selector}`)]
+      .map(el => Number(el.closest('[data-index]')?.dataset?.index))
+      .filter(Number.isFinite);
+    return indices.length ? { first: Math.min(...indices), last: Math.max(...indices) } : { first: null, last: null };
+  };
+  const mountedMessageKeys = () => new Set([...document.querySelectorAll(selector)].map((el, index) => {
+    const testId = el.getAttribute?.('data-testid') || '';
+    return testId || `${el.closest('[data-index]')?.dataset?.index ?? index}|${messageSideOf(el)}|${textOf(el)}`;
+  }).filter(Boolean));
+  const conversationScroller = () => {
+    const message = document.querySelector(selector);
+    let node = message?.closest('[data-index]')?.parentElement || message?.parentElement || null;
+    while (node && node !== document.body) {
+      const style = getComputedStyle(node);
+      if (/(auto|scroll)/.test(style.overflowY) && node.scrollHeight > node.clientHeight + 48) return node;
+      node = node.parentElement;
+    }
+    const root = document.scrollingElement;
+    return root && root.scrollHeight > root.clientHeight + 48 ? root : null;
+  };
+  const runCalendarIndexScan = async (onProgress, prepareStart) => {
+    if (calendarScanTask) return calendarScanTask;
+    calendarScanStopRequested = false;
+    calendarLastProgressAt = 0;
+    const previousNotionSyncSuppressed = suppressNotionAutoSync;
+    suppressNotionAutoSync = true;
+    const report = (result, detail = {}) => {
+      calendarScanState = { running: result === 'scanning', result, count: calendarIndexCount(), ...detail };
+      // Scrolling already causes X to repaint the virtualized list. Throttle
+      // the overlay updates so the progress UI does not compete with that
+      // repaint on long conversations, while still reporting start/stop/end
+      // immediately.
+      const now = Date.now();
+      const shouldReport = result !== 'scanning' || !calendarLastProgressAt || now - calendarLastProgressAt >= 240;
+      if (shouldReport) {
+        calendarLastProgressAt = now;
+        onProgress?.(calendarScanState);
+      }
+    };
+    calendarScanTask = (async () => {
+      clearTimeout(autoTimer);
+      autoTimer = null;
+      autoDueAt = 0;
+      report('scanning');
+      const scanConversationId = currentConversationId();
+
+      // After a reload there is no in-memory resume cursor. Reopen the oldest
+      // cached day first, then continue above it instead of replaying the whole
+      // conversation from the newest message on every scan.
+      let preparedFromCache = false;
+      if (typeof prepareStart === 'function') {
+        try {
+          preparedFromCache = !!(await prepareStart());
+        } catch (error) {
+          console.warn('Calendar resume location failed; starting from the newest message.', error);
+        }
+      }
+      if (!sameConversation(scanConversationId, currentConversationId())) {
+        calendarScanStopRequested = true;
+        report('stopped');
+        return calendarScanState;
+      }
+      const scroller = conversationScroller();
+      if (!scroller) {
+        report('no-scroller');
+        return calendarScanState;
+      }
+
+      const mountedBeforeStart = mountedMessageKeys();
+      const canResume = calendarScanResume
+        && sameConversation(calendarScanResume.conversationId, scanConversationId)
+        && calendarScanResume.keys.some(key => mountedBeforeStart.has(key));
+      if (!canResume && !preparedFromCache) {
+        // Start from the newest end so one pass covers the whole conversation.
+        scroller.scrollTop = scroller.scrollHeight;
+        await calendarWait(220);
+      }
+      captureVisibleCalendarFirstMessages();
+      report('scanning');
+
+      let oldestSeen = mountedMessageIndexRange().first;
+      const seenMessageKeys = mountedMessageKeys();
+      let topPageStalls = 0;
+      for (let step = 0; step < 2500 && !calendarScanStopRequested && !calendarScanDisposed; step += 1) {
+        if (!sameConversation(scanConversationId, currentConversationId())) {
+          calendarScanStopRequested = true;
+          break;
+        }
+        const beforeTop = scroller.scrollTop;
+        const beforeWindowKeys = mountedMessageKeys();
+        // Move almost one viewport at a time. The small overlap prevents a
+        // date divider at the edge of two virtualized windows from being
+        // skipped, while reducing the number of scroll/render cycles.
+        const distance = Math.max(360, Math.floor(scroller.clientHeight * 0.92));
+        scroller.scrollTop = Math.max(0, beforeTop - distance);
+        // Let X render as fast as the browser can paint. Only spend a second
+        // frame when its virtualized message window has not changed yet.
+        await calendarNextPaint();
+        let mountedKeys = mountedMessageKeys();
+        if (!calendarWindowChanged(beforeWindowKeys, mountedKeys)) {
+          await calendarNextPaint();
+          mountedKeys = mountedMessageKeys();
+        }
+        captureVisibleCalendarFirstMessages();
+        const range = mountedMessageIndexRange();
+        for (const key of mountedKeys) seenMessageKeys.add(key);
+        const foundOlder = range.first !== null && (oldestSeen === null || range.first < oldestSeen);
+        if (foundOlder) oldestSeen = range.first;
+        report('scanning', { step: step + 1, oldest: oldestSeen, top: Math.round(scroller.scrollTop) });
+
+        if (scroller.scrollTop <= 2) {
+          // Reaching scrollTop=0 usually means "top of the currently loaded
+          // page", not necessarily the beginning of the conversation. Probe
+          // quickly first, then give a slow network progressively more time;
+          // X can rebase data-index values when it prepends an older page.
+          let loadedOlderPage = false;
+          const waitSchedule = [120, 240, 480, 900];
+          for (const delay of waitSchedule) {
+            if (calendarScanStopRequested || calendarScanDisposed) break;
+            const beforeHeight = scroller.scrollHeight;
+            scroller.scrollTop = 0;
+            await calendarWait(delay);
+            captureVisibleCalendarFirstMessages();
+            const afterWait = mountedMessageIndexRange();
+            const afterKeys = mountedMessageKeys();
+            let newStableMessages = 0;
+            for (const key of afterKeys) {
+              if (!seenMessageKeys.has(key)) newStableMessages += 1;
+              seenMessageKeys.add(key);
+            }
+            const lowerIndex = afterWait.first !== null && (oldestSeen === null || afterWait.first < oldestSeen);
+            const listExpanded = scroller.scrollHeight > beforeHeight + 24;
+            if (lowerIndex) oldestSeen = afterWait.first;
+            report('scanning', { step: step + 1, oldest: oldestSeen, top: Math.round(scroller.scrollTop) });
+            if (newStableMessages || lowerIndex || listExpanded) {
+              loadedOlderPage = true;
+              topPageStalls = 0;
+              break;
+            }
+          }
+          if (!loadedOlderPage) topPageStalls += 1;
+          // A second pass protects slow connections without the previous long
+          // fixed waits after the conversation has actually ended.
+          if (topPageStalls >= 2) break;
+        } else {
+          topPageStalls = 0;
+        }
+        if ((step + 1) % 60 === 0) flushSave();
+      }
+
+      const stopped = calendarScanStopRequested || calendarScanDisposed;
+      if (stopped && !calendarScanDisposed) {
+        // Keep the current virtualized window mounted. Pressing scan again in
+        // the same page resumes here instead of replaying the newest history.
+        calendarScanResume = { conversationId: scanConversationId, keys: [...mountedMessageKeys()].slice(0, 8) };
+      } else {
+        calendarScanResume = null;
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          scroller.scrollTop = scroller.scrollHeight;
+          await calendarWait(120);
+        }
+      }
+      captureVisibleCalendarFirstMessages();
+      flushSave();
+      report(stopped ? 'stopped' : 'complete');
+      return calendarScanState;
+    })().finally(() => {
+      suppressNotionAutoSync = previousNotionSyncSuppressed;
+      calendarScanTask = null;
+      calendarScanStopRequested = false;
+      if (!calendarScanDisposed) scheduleAutoTranslation(180);
+    });
+    return calendarScanTask;
   };
   const rememberQuotedMessage = (el, sourceRecord) => {
     const quote = quoteInfoOf(el);
@@ -1863,17 +2438,18 @@
     .xcb-console-link{display:grid;gap:14px;padding:18px}.xcb-console-link input{width:100%;min-height:44px;box-sizing:border-box;padding:9px 11px;border:1px solid #536471;border-radius:12px;color:#eff3f4;background:#0f1419;font:inherit}
     .xcb-console-chip-list{display:flex;flex-wrap:wrap;gap:7px}.xcb-console-chip,.xcb-console-branch-suggestion{display:inline-flex;align-items:center;gap:5px;min-height:34px!important;padding:5px 10px!important;border:1px solid #536471!important;border-radius:999px!important;color:#eff3f4!important;background:transparent!important;font:inherit}.xcb-console-chip button{display:grid;place-items:center;width:22px;height:22px;padding:0;border:0;border-radius:50%;color:#f4212e;background:transparent;font:18px/1 inherit}
     .xcb-console-data-section{display:grid;gap:9px;padding-top:4px}.xcb-console-data-section>h3{margin:0;color:#eff3f4;font-size:15px}.xcb-console-data-actions{display:flex;flex-wrap:wrap;gap:8px}.xcb-console-data-actions button{flex:1 1 150px}.xcb-console-search-results{display:grid;gap:8px}.xcb-console-list-item em{color:#8b98a5;font-style:normal;font-size:12px}.xcb-console-branch-row{position:relative}.xcb-console-branch-row>.xcb-console-list-item{padding-right:50px!important}
+    .xcb-console-calendar{overflow:hidden;border:1px solid #2f3336;border-radius:16px;background:#0f1419}.xcb-console-calendar>summary{display:flex;align-items:center;gap:8px;min-height:46px;box-sizing:border-box;padding:9px 13px;cursor:pointer;list-style:none;color:#eff3f4;font-weight:700}.xcb-console-calendar>summary::-webkit-details-marker{display:none}.xcb-console-calendar>summary::after{content:"›";margin-left:4px;color:#8b98a5;font-size:21px;line-height:1;transform:rotate(90deg);transition:transform .18s}.xcb-console-calendar[open]>summary::after{transform:rotate(-90deg)}.xcb-console-calendar>summary small{margin-left:auto;color:#8b98a5;font-size:12px;font-weight:400}.xcb-console-calendar-body{display:grid;gap:10px;padding:11px 12px 13px;border-top:1px solid #2f3336;background:#000}.xcb-console-calendar-header{display:grid;grid-template-columns:38px 1fr 38px;align-items:center;gap:6px}.xcb-console-calendar-header strong{text-align:center}.xcb-console-calendar-header button{display:grid;place-items:center;min-height:36px!important;padding:0!important;border:0!important;border-radius:999px!important;color:#eff3f4!important;background:transparent!important;font-size:20px!important}.xcb-console-calendar-header button:hover{background:#202327!important}.xcb-console-calendar-weekdays,.xcb-console-calendar-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:3px}.xcb-console-calendar-weekdays span{padding:3px 0;color:#71767b;font-size:11px;text-align:center}.xcb-console-calendar-day{position:relative;display:grid;place-items:center;min-width:0;min-height:38px!important;padding:0!important;border:0!important;border-radius:999px!important;color:#536471!important;background:transparent!important;font-size:13px!important}.xcb-console-calendar-day.has-messages{color:#eff3f4!important;background:#162d3d!important;font-weight:700!important}.xcb-console-calendar-day.has-messages:hover{background:#1d9bf0!important}.xcb-console-calendar-day.is-today{box-shadow:inset 0 0 0 1px #1d9bf0}.xcb-console-calendar-day.is-selected{color:#fff!important;background:#1d9bf0!important;box-shadow:inset 0 0 0 2px #eff3f4}.xcb-console-calendar-day:disabled{cursor:default!important;opacity:.72!important}.xcb-console-calendar-empty{margin:0;color:#8b98a5;font-size:13px;line-height:1.45}.xcb-console-calendar-index{display:grid;gap:7px;padding-top:10px;border-top:1px solid #2f3336}.xcb-console-calendar-index button{justify-self:start;min-height:38px!important;padding:7px 13px!important}.xcb-console-calendar-index small{color:#8b98a5;line-height:1.45}
     .xcb-console-collapsible{border-top:1px solid #2f3336;padding-top:4px}.xcb-console-collapsible>summary{display:flex;align-items:center;gap:8px;min-height:44px;cursor:pointer;list-style:none;color:#eff3f4;font-weight:700}.xcb-console-collapsible>summary::-webkit-details-marker{display:none}.xcb-console-collapsible>summary::after{content:"›";margin-left:auto;color:#8b98a5;font-size:20px;transform:rotate(90deg);transition:transform .18s}.xcb-console-collapsible[open]>summary::after{transform:rotate(-90deg)}.xcb-console-collapsible-count{color:#8b98a5;font-size:12px;font-weight:400}.xcb-console-collapsible-body{display:grid;gap:9px;padding-bottom:4px}
     .xcb-console-vocabulary-editor,.xcb-console-vocabulary-group{overflow:hidden;border:1px solid #2f3336;border-radius:16px;background:#0f1419}.xcb-console-vocabulary-editor>summary,.xcb-console-vocabulary-group>summary{display:flex;align-items:center;gap:9px;min-height:48px;box-sizing:border-box;padding:10px 14px;cursor:pointer;list-style:none;color:#eff3f4}.xcb-console-vocabulary-editor>summary::-webkit-details-marker,.xcb-console-vocabulary-group>summary::-webkit-details-marker{display:none}.xcb-console-vocabulary-editor>summary::after,.xcb-console-vocabulary-group>summary::after{content:"›";margin-left:8px;color:#8b98a5;font-size:22px;line-height:1;transform:rotate(90deg);transition:transform .18s}.xcb-console-vocabulary-editor[open]>summary::after,.xcb-console-vocabulary-group[open]>summary::after{transform:rotate(-90deg)}.xcb-console-vocabulary-editor>summary{font-weight:700}.xcb-console-vocabulary-group>summary strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.xcb-console-vocabulary-group>summary small{margin-left:auto;color:#8b98a5;font-size:12px;white-space:nowrap}.xcb-console-vocabulary-form{display:grid;gap:10px;padding:14px;border-top:1px solid #2f3336;background:#000}.xcb-console-vocabulary-form textarea{width:100%;min-height:78px;box-sizing:border-box;padding:9px 11px;resize:vertical;border:1px solid #536471;border-radius:12px;color:#eff3f4;background:#0f1419;font:inherit}.xcb-console-vocabulary-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.xcb-console-vocabulary-groups{display:grid;gap:9px}.xcb-console-vocabulary-group-list{border-top:1px solid #2f3336}.xcb-console-vocabulary-group-list .xcb-console-list-row:not(:last-child){border-bottom:1px solid #202327}.xcb-console-vocabulary-card{border:0!important;border-radius:0!important;background:transparent!important;padding:12px 50px 12px 14px!important}.xcb-console-vocabulary-card:hover{background:#16181c!important}.xcb-console-vocabulary-wordline{display:flex;align-items:baseline;gap:8px;min-width:0}.xcb-console-vocabulary-wordline strong{overflow:visible;white-space:normal;font-size:16px}.xcb-console-vocabulary-card .xcb-console-vocabulary-pronunciation{color:#8b98a5;font-size:13px}.xcb-console-vocabulary-meaning{color:#eff3f4;line-height:1.45}.xcb-console-vocabulary-group-list .xcb-console-list-remove{top:50%;transform:translateY(-50%)}
     .xcb-console-section-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}.xcb-console-section-heading h3{margin:0;color:#eff3f4;font-size:15px}.xcb-console-section-heading a{color:#1d9bf0;font-size:13px;text-decoration:none}.xcb-console-copy-organized{min-height:36px!important;padding:7px 12px!important;border:1px solid #2f3336!important;color:#1d9bf0!important;background:transparent!important;font-size:13px!important}.xcb-console-notion{margin-top:4px;padding:14px;border:1px solid #2f3336;border-radius:16px;background:#0f1419}.xcb-console-panel button:disabled{cursor:wait;opacity:.65}
     .xcb-console-connection{border:1px solid #2f3336;border-radius:14px;background:#000}.xcb-console-connection>summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:44px;box-sizing:border-box;padding:9px 12px;cursor:pointer;list-style:none;font-weight:600}.xcb-console-connection>summary::-webkit-details-marker{display:none}.xcb-console-connection>summary::after{content:"›";margin-left:auto;color:#8b98a5;font-size:22px;line-height:1;transform:rotate(90deg);transition:transform .18s}.xcb-console-connection[open]>summary::after{transform:rotate(-90deg)}.xcb-console-connection-state{margin-left:auto;color:#8b98a5;font-size:12px;font-weight:400}.xcb-console-connection-fields{display:grid;gap:12px;padding:4px 12px 12px;border-top:1px solid #2f3336}.xcb-console-sync-state{display:flex;align-items:center;justify-content:space-between;gap:10px}.xcb-console-sync-state .xcb-console-notion-status{margin:0;white-space:pre-line}.xcb-console-text-button{min-height:32px!important;padding:4px 8px!important;color:#1d9bf0!important;background:transparent!important;font-size:12px!important;white-space:nowrap}.xcb-console-sync-kind{margin:0;padding:9px 11px;border-radius:12px;color:#b6c2cb;background:#16181c;font-size:13px}
-    .xcb-console-master{margin-right:auto!important;border:1px solid #f4212e!important;color:#ff8a91!important;background:#20090c!important;font-weight:700!important}
+    .xcb-console-master{margin-right:auto!important;border:1px solid #f4212e!important;color:#ff8a91!important;background:#20090c!important;font-weight:700!important}.xcb-console-chatgpt{color:#fff!important;background:#1d9bf0!important}
     .xcb-console-master:hover{color:#fff!important;background:#3a0b10!important}
     .xcb-console-entry-fallback{touch-action:none;cursor:ns-resize}.xcb-console-entry-fallback.xcb-console-dragging{cursor:grabbing;opacity:.85}
     .xcb-console-language-grid{display:grid;gap:12px}
     .xcb-console-detail{width:min(620px,calc(100vw - 24px));max-height:min(88vh,820px)}.xcb-console-detail>header{position:sticky;top:0;z-index:2;align-items:center;padding:12px 14px;border-bottom:1px solid #2f3336;background:#000}.xcb-console-detail>header>div{display:grid;min-width:0;gap:2px;flex:1}.xcb-console-detail>header strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.xcb-console-detail>header small{overflow:hidden;color:#8b98a5;font-size:12px;font-weight:400;text-overflow:ellipsis;white-space:nowrap}.xcb-console-detail-icon{display:grid;place-items:center;flex:0 0 38px;width:38px;height:38px;padding:0!important;border:0;border-radius:999px;color:#eff3f4;background:transparent;font:22px/1 inherit;cursor:pointer}.xcb-console-detail-icon:hover{background:#202327}.xcb-console-detail-body{display:grid;gap:14px;padding:16px 18px}.xcb-console-detail-section{display:grid;gap:7px}.xcb-console-detail-section>h4{margin:0;color:#8b98a5;font-size:12px;font-weight:600}.xcb-console-detail-copy{margin:0;padding:12px 13px;border:1px solid #2f3336;border-radius:14px;color:#eff3f4;background:#0f1419;white-space:pre-wrap;overflow-wrap:anywhere}.xcb-console-detail-note{border-color:#1d9bf0;background:#071824}.xcb-console-context-list{display:grid;gap:8px}.xcb-console-context-item{display:grid;gap:3px;padding:10px 12px;border-left:2px solid #536471;border-radius:0 12px 12px 0;background:#0f1419}.xcb-console-context-item.current{border-left-color:#1d9bf0;background:#071824}.xcb-console-context-item small{color:#8b98a5;font-size:11px}.xcb-console-context-item span{white-space:pre-wrap;overflow-wrap:anywhere}.xcb-console-context-item em{color:#b6c2cb;font-style:normal;white-space:pre-wrap;overflow-wrap:anywhere}.xcb-console-detail-data{border-top:1px solid #2f3336}.xcb-console-detail-data>summary{min-height:42px;padding-top:8px;color:#8b98a5;cursor:pointer}.xcb-console-detail-data dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:6px 12px;margin:0;padding-bottom:4px;font-size:12px}.xcb-console-detail-data dt{color:#8b98a5}.xcb-console-detail-data dd{min-width:0;margin:0;color:#b6c2cb;overflow-wrap:anywhere}.xcb-console-detail-status{margin:0;color:#8b98a5;font-size:13px;white-space:pre-wrap}
     .xcb-console-three-way{grid-template-columns:repeat(3,minmax(0,1fr))}.xcb-console-scope-switch{display:grid;grid-template-columns:1fr 1fr;gap:3px;margin:12px 18px 0;padding:3px;border-radius:999px;background:#16181c}.xcb-console-scope-switch button{min-height:38px;border:0;border-radius:999px;color:#8b98a5;background:transparent;font:inherit}.xcb-console-scope-switch button.active{color:#eff3f4;background:#2f3336;font-weight:700}.xcb-console-context-meta{color:#71767b!important;font-size:11px!important}.xcb-console-search-state{display:flex;align-items:center;justify-content:space-between;gap:8px}.xcb-console-stop-search{min-height:34px!important;padding:6px 11px!important;color:#f4212e!important;background:transparent!important;border:1px solid #2f3336!important}.xcb-console-import-preview{padding:13px;border:1px solid #1d9bf0;border-radius:16px;background:#071824}.xcb-console-import-preview>p,.xcb-console-import-preview>h4{margin:0}.xcb-console-conflict{display:grid;gap:8px;padding:11px;border:1px solid #2f3336;border-radius:12px;background:#000}.xcb-console-conflict-copy{display:grid;grid-template-columns:1fr 1fr;gap:8px}.xcb-console-conflict-copy span{display:grid;gap:4px;color:#8b98a5;font-size:12px}.xcb-console-conflict-copy small{max-height:90px;overflow:auto;color:#eff3f4;white-space:pre-wrap}.xcb-console-conflict select{width:100%}.xcb-console-deleted-dot{display:inline-block;width:7px;height:7px;margin-right:5px;border-radius:50%;background:#f4212e}
-    @media (max-width:700px){.xcb-console-data-actions{display:grid;grid-template-columns:1fr}.xcb-console-data-actions button{width:100%}.xcb-console-sync-state{align-items:flex-start;flex-direction:column}.xcb-console-text-button{width:auto!important;align-self:flex-start}.xcb-console-connection>summary{min-height:48px}.xcb-console-vocabulary-grid,.xcb-console-conflict-copy{grid-template-columns:1fr}.xcb-console-vocabulary-editor>summary,.xcb-console-vocabulary-group>summary{min-height:52px;padding-inline:13px}.xcb-console-vocabulary-card{min-height:52px!important;padding-block:11px!important}.xcb-console-list-remove{width:40px;min-width:40px;min-height:40px!important}.xcb-console-scope-switch{margin-inline:12px}.xcb-console-three-way button{padding-inline:4px;font-size:13px}.xcb-console-detail{width:100%;max-height:94dvh;border-radius:22px 22px 0 0}.xcb-console-detail-body{padding:14px}.xcb-console-detail .xcb-console-actions{display:grid;grid-template-columns:1fr 1fr}.xcb-console-detail .xcb-console-actions button{width:100%}.xcb-console-detail .xcb-console-actions .primary{grid-column:1/-1;grid-row:1}}
+    @media (max-width:700px){.xcb-console-data-actions{display:grid;grid-template-columns:1fr}.xcb-console-data-actions button{width:100%}.xcb-console-sync-state{align-items:flex-start;flex-direction:column}.xcb-console-text-button{width:auto!important;align-self:flex-start}.xcb-console-connection>summary{min-height:48px}.xcb-console-vocabulary-grid,.xcb-console-conflict-copy{grid-template-columns:1fr}.xcb-console-vocabulary-editor>summary,.xcb-console-vocabulary-group>summary{min-height:52px;padding-inline:13px}.xcb-console-vocabulary-card{min-height:52px!important;padding-block:11px!important}.xcb-console-list-remove{width:40px;min-width:40px;min-height:40px!important}.xcb-console-scope-switch{margin-inline:12px}.xcb-console-three-way button{padding-inline:4px;font-size:13px}.xcb-console-calendar>summary{min-height:50px}.xcb-console-calendar-body{padding-inline:9px}.xcb-console-calendar-day{min-height:40px!important}.xcb-console-detail{width:100%;max-height:94dvh;border-radius:22px 22px 0 0}.xcb-console-detail-body{padding:14px}.xcb-console-detail .xcb-console-actions{display:grid;grid-template-columns:1fr 1fr}.xcb-console-detail .xcb-console-actions button{width:100%}.xcb-console-detail .xcb-console-actions .primary{grid-column:1/-1;grid-row:1}}
   `;
   document.head.append(style);
 
@@ -2054,6 +2630,134 @@
       '<after>', ...context.after, '</after>'
     ].join('\n');
   };
+  const pendingChatGPTWebRequests = new Map();
+  const chatGPTWebPrompt = (el, record) => [
+    'You are a careful multilingual conversation translator.',
+    `Translate the target message according to this direction: ${directionLabel(directionFor(record) || `${directionSource()}-${directionTarget()}`)}.`,
+    'Read the before, quoted, and after context before deciding the meaning. Return JSON only: {"translation":"...","notes":"..."}. The notes field should briefly explain important tone, idiom, or ambiguous words in the target language used by the X Context Bridge interface.',
+    refinementPrompt(el, record)
+  ].join('\n\n');
+  const parseChatGPTWebResponse = raw => {
+    const text = String(raw || '').trim();
+    const fenced = text.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/i, '').trim();
+    const candidate = fenced.match(/\{[\s\S]*\}/)?.[0] || fenced;
+    try {
+      const parsed = JSON.parse(candidate);
+      return { translation: String(parsed.translation || '').trim(), notes: String(parsed.notes || '').trim() };
+    } catch {
+      return { translation: '', notes: '' };
+    }
+  };
+  const launchChatGPTWeb = async (el, record, button) => {
+    captureContextSnapshot(el, record);
+    const requestId = `xcb-chatgpt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const payload = {
+      requestId,
+      recordId: record.id,
+      direction: directionFor(record) || `${directionSource()}-${directionTarget()}`,
+      createdAt: Date.now(),
+      prompt: chatGPTWebPrompt(el, record)
+    };
+    let child = null;
+    try { child = window.open('about:blank', '_blank'); } catch {}
+    if (!child) {
+      try {
+        await navigator.clipboard.writeText(payload.prompt);
+        button.textContent = t('chatGPTCopied');
+      } catch { button.textContent = t('chatGPTFailed'); }
+      return;
+    }
+    const requestStoreKey = `${CHATGPT_REQUEST_STORE_PREFIX}${requestId}`;
+    const resultStoreKey = `${CHATGPT_RESULT_STORE_PREFIX}${requestId}`;
+    const storedForCompanion = chatGPTStoreSet(requestStoreKey, payload);
+    if (storedForCompanion) chatGPTStoreSet(CHATGPT_LATEST_REQUEST_KEY, requestId);
+    const targetUrl = storedForCompanion
+      ? `https://chatgpt.com/#xcb-request=${encodeURIComponent(requestId)}`
+      : `https://chatgpt.com/#xcb-packet=${encodeURIComponent(JSON.stringify(payload))}`;
+    const pending = { requestId, recordId: record.id, direction: payload.direction, window: child, button, pollTimer: 0, startedAt: Date.now(), requestStoreKey, resultStoreKey };
+    pendingChatGPTWebRequests.set(requestId, pending);
+    pending.pollTimer = setInterval(() => {
+      const storedResult = chatGPTStoreGet(resultStoreKey);
+      if (storedResult?.source === 'xcb-chatgpt-web') {
+        clearInterval(pending.pollTimer);
+        window.__xcbChatGPTWebListener?.({ origin: 'https://chatgpt.com', source: child, data: storedResult });
+        return;
+      }
+      let raw = '';
+      try { raw = String(child.name || ''); } catch {}
+      if (raw.startsWith(CHATGPT_RESULT_PREFIX)) {
+        try {
+          const data = JSON.parse(raw.slice(CHATGPT_RESULT_PREFIX.length));
+          clearInterval(pending.pollTimer);
+          window.__xcbChatGPTWebListener?.({ origin: 'https://chatgpt.com', source: child, data });
+          return;
+        } catch {}
+      }
+      if (Date.now() - pending.startedAt > 190000) {
+        clearInterval(pending.pollTimer);
+        window.__xcbChatGPTWebListener?.({ origin: 'https://chatgpt.com', source: child, data: { source: 'xcb-chatgpt-web', type: 'error', requestId, message: 'ChatGPT response timeout' } });
+      }
+    }, 500);
+    button.disabled = true;
+    button.dataset.xcbChatGPTRequest = requestId;
+    button.textContent = t('chatGPTOpening');
+    try {
+      child.name = `${CHATGPT_WEB_PREFIX}${JSON.stringify(payload)}`;
+      child.location.href = targetUrl;
+    } catch {
+      pendingChatGPTWebRequests.delete(requestId);
+      chatGPTStoreDelete(requestStoreKey);
+      if (chatGPTStoreGet(CHATGPT_LATEST_REQUEST_KEY) === requestId) chatGPTStoreDelete(CHATGPT_LATEST_REQUEST_KEY);
+      try { await navigator.clipboard.writeText(payload.prompt); } catch {}
+      button.disabled = false;
+      button.textContent = t('chatGPTFailed');
+    }
+  };
+  window.__xcbChatGPTWebListener && window.removeEventListener('message', window.__xcbChatGPTWebListener);
+  window.__xcbChatGPTWebListener = event => {
+    if (!/^https:\/\/(chatgpt\.com|chat\.openai\.com)$/i.test(event.origin || '')) return;
+    const data = event.data;
+    if (!data || data.source !== 'xcb-chatgpt-web' || !data.requestId) return;
+    const pending = pendingChatGPTWebRequests.get(data.requestId);
+    if (!pending || (pending.window && event.source !== pending.window)) return;
+    clearInterval(pending.pollTimer);
+    pendingChatGPTWebRequests.delete(data.requestId);
+    chatGPTStoreDelete(pending.requestStoreKey);
+    chatGPTStoreDelete(pending.resultStoreKey);
+    if (chatGPTStoreGet(CHATGPT_LATEST_REQUEST_KEY) === data.requestId) chatGPTStoreDelete(CHATGPT_LATEST_REQUEST_KEY);
+    try { pending.window.name = ''; } catch {}
+    if (data.type === 'error') {
+      if (pending.button) {
+        pending.button.disabled = false;
+        delete pending.button.dataset.xcbChatGPTRequest;
+        pending.button.textContent = t('sendToChatGPT');
+      }
+      chatGPTBridgeToast(`X Context Bridge：${data.message || t('chatGPTFailed')}`);
+      return;
+    }
+    const result = parseChatGPTWebResponse(data.text);
+    const record = state.messages[pending.recordId];
+    if (!record || !result.translation) {
+      if (pending.button) {
+        pending.button.disabled = false;
+        delete pending.button.dataset.xcbChatGPTRequest;
+        pending.button.textContent = t('sendToChatGPT');
+      }
+      chatGPTBridgeToast(`X Context Bridge：${t('chatGPTFailed')}`);
+      return;
+    }
+    setTranslationForDirection(record, pending.direction, result.translation, 'chatgpt-web');
+    if (result.notes) setNotesForDirection(record, pending.direction, result.notes);
+    record.page = 0;
+    record.updatedAt = new Date().toISOString();
+    save(true);
+    document.querySelector('.xcb-console-overlay')?.remove();
+    layoutRevision += 1;
+    refreshVisible();
+    chatGPTBridgeToast(`X Context Bridge：${t('chatGPTResult')}`);
+  };
+  window.addEventListener('message', window.__xcbChatGPTWebListener);
+
   async function refineWithGemini(el, record) {
     if (!sessionGeminiApiKey) throw new Error(t('missingApi', 'Gemini'));
     const prompt = refinementPrompt(el, record);
@@ -2309,7 +3013,8 @@
           .map(branch => `<button class="xcb-console-branch-suggestion" data-use-branch="${escape(branch.title)}">${escape(branch.title)}</button>`).join('');
         main = `<div class="xcb-console-link"><label class="xcb-console-field"><span>${escape(t('branchTitle'))}</span><input data-field="branch-title" value="${escape(linkDraft.branchTitle)}" placeholder="${escape(t('branchPlaceholder'))}"></label>${suggestions ? `<div class="xcb-console-chip-list">${suggestions}</div>` : ''}<label class="xcb-console-field"><span>${escape(t('tags'))}</span><input data-field="tags" value="${escape(linkDraft.tags)}" placeholder="${escape(t('tagsPlaceholder'))}"></label>${memberships ? `<div class="xcb-console-field"><span>${escape(t('linkedBranches'))}</span><div class="xcb-console-chip-list">${memberships}</div></div>` : ''}<p class="xcb-console-muted">${escape(t('linkHint'))}</p></div>`;
       }
-      const textActions = tab < 2 ? `<button class="xcb-console-ai">${escape(activeApiKey() ? t('aiRefine') : t('setApi'))}</button><button class="xcb-console-copy">${escape(t('copy'))}</button>` : '';
+      const chatGPTAction = innerWidth > 700 ? `<button class="xcb-console-chatgpt">${escape(t('sendToChatGPT'))}</button>` : '';
+      const textActions = tab < 2 ? `<button class="xcb-console-ai">${escape(activeApiKey() ? t('aiRefine') : t('setApi'))}</button>${chatGPTAction}<button class="xcb-console-copy">${escape(t('copy'))}</button>` : '';
       const aiError = record.aiError || record.geminiError || '';
       overlay.innerHTML = `<section class="xcb-console-editor" role="dialog" aria-modal="true"><header>${escape(t('editMessage'))}</header><p class="xcb-console-source">${escape(record.text)}</p><nav class="xcb-console-tabs"><button class="${tab === 0 ? 'active' : ''}" data-tab="0">${escape(t('translation'))}</button><button class="${tab === 1 ? 'active' : ''}" data-tab="1">${escape(t('toneTab'))}</button><button class="${tab === 2 ? 'active' : ''}" data-tab="2">${escape(t('organize'))}</button><button class="${tab === 3 ? 'active' : ''}" data-tab="3">${escape(t('link'))}</button></nav>${main}${record.autoTranslationError && tab === 0 ? `<p class="xcb-console-source">${escape(record.autoTranslationError)}</p>` : ''}${aiError && tab < 2 ? `<p class="xcb-console-source">${escape(aiError)}</p>` : ''}<div class="xcb-console-actions">${textActions}<button class="xcb-console-cancel">${escape(t('cancel'))}</button><button class="xcb-console-done">${escape(t('done'))}</button></div></section>`;
       overlay.querySelectorAll('[data-tab]').forEach(button => button.onclick = () => { capture(); tab = Number(button.dataset.tab); render(); });
@@ -2330,6 +3035,7 @@
         render();
       });
       overlay.querySelector('.xcb-console-ai')?.addEventListener('click', runAIRefinement);
+      overlay.querySelector('.xcb-console-chatgpt')?.addEventListener('click', event => launchChatGPTWeb(el, record, event.currentTarget));
       overlay.querySelector('.xcb-console-copy')?.addEventListener('click', async event => {
         const button = event.currentTarget;
         const text = tab === 1 ? activeNotes(record) : (activeTranslation(record) || record.text);
@@ -2362,7 +3068,11 @@
     document.querySelector('.xcb-console-overlay')?.remove();
     let tab = initialTab;
     let dataQuery = '';
+    let dataSearchTimer = 0;
+    let dataSearchComposing = false;
     let selectedBranchId = '';
+    let calendarOpen = false;
+    let calendarMonth = calendarPreferredMonth;
     let notionNotice = '';
     let vocabularyFormOpen = vocabularyRecords().length === 0;
     const openVocabularyTopics = new Set();
@@ -2374,6 +3084,12 @@
     let pendingImport = null;
     const overlay = document.createElement('div'); overlay.className = 'xcb-console-overlay';
     document.body.append(overlay);
+    if (!document.getElementById(CALENDAR_LIVE_STYLE_ID)) {
+      const style = document.createElement('style');
+      style.id = CALENDAR_LIVE_STYLE_ID;
+      style.textContent = '.xcb-console-calendar-scan-live{display:grid;gap:7px;padding:10px 11px;border:1px solid #2f3336;border-radius:12px;color:#8b98a5;background:#0f1419;font-size:12px}.xcb-console-calendar-scan-live strong{color:#b6c2cb;font-weight:500;line-height:1.45}.xcb-console-calendar-scan-live.is-running{border-color:#1d9bf0;color:#1d9bf0}.xcb-console-calendar-scan-live.is-running strong{color:#eff3f4}.xcb-console-calendar-scan-dot{display:none;width:8px;height:8px;border-radius:50%;background:#1d9bf0}.xcb-console-calendar-scan-live.is-running .xcb-console-calendar-scan-dot{display:block;animation:xcb-calendar-pulse 1s ease-in-out infinite}.xcb-console-calendar-scan-bar{display:block;height:4px;overflow:hidden;border-radius:999px;background:#202327}.xcb-console-calendar-scan-bar i{display:block;width:35%;height:100%;border-radius:999px;background:#1d9bf0;animation:xcb-calendar-progress 1.2s ease-in-out infinite}.xcb-console-calendar-scan-live:not(.is-running) .xcb-console-calendar-scan-bar{display:none}@keyframes xcb-calendar-pulse{50%{opacity:.3;transform:scale(.7)}}@keyframes xcb-calendar-progress{0%{transform:translateX(-120%)}100%{transform:translateX(310%)}}';
+      document.head.append(style);
+    }
     const isEditableControl = target => target instanceof Element
       && !!target.closest('input, textarea, select, [contenteditable="true"]');
     overlay.addEventListener('keydown', event => {
@@ -2387,13 +3103,122 @@
     const records = () => scopedMessageRecords();
     const dataConversationCount = () => {
       const ids = new Set();
+      const add = value => { const id = conversationIdentity(value); if (id) ids.add(id); };
       Object.values(state.messages || {}).forEach(record => {
-        if (record?.conversationId) ids.add(record.conversationId);
+        if (record?.conversationId) add(record.conversationId);
       });
       branchRecords().forEach(branch => {
-        if (branch?.conversationId) ids.add(branch.conversationId);
+        if (branch?.conversationId) add(branch.conversationId);
       });
       return ids.size;
+    };
+    const calendarRecords = () => {
+      const currentId = conversationIdentity(currentConversationId());
+      return Object.values(state.messages || {})
+        .filter(record => !record.manualEntry && !record.quoteOnly && /^\d{4}-\d{2}-\d{2}$/.test(record.messageDate || '')
+          && conversationIdentity(record.conversationId) === currentId)
+        .sort((a, b) => String(a.messageDate).localeCompare(String(b.messageDate))
+          || Number(a.messageIndex ?? Number.MAX_SAFE_INTEGER) - Number(b.messageIndex ?? Number.MAX_SAFE_INTEGER));
+    };
+    const calendarRecordMap = () => {
+      let backfilled = false;
+      calendarRecords().forEach(record => {
+        if (rememberCalendarRecord(record, record.messageDate, record.messageIndex)) backfilled = true;
+      });
+      if (backfilled) saveLocalMetadata();
+      const days = new Map();
+      Object.entries(calendarEntriesFor()).forEach(([date, entry]) => {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+        const fallback = {
+          id: entry.recordId,
+          text: entry.text || '',
+          nativeTestId: entry.nativeTestId || '',
+          conversationId: currentConversationId(),
+          messageDate: date,
+          messageIndex: entry.messageIndex
+        };
+        const record = state.messages[entry.recordId] || fallback;
+        const anchors = (Array.isArray(entry.anchors) ? entry.anchors : [])
+          .map(anchor => {
+            const saved = state.messages[anchor.recordId] || {};
+            return {
+              ...anchor,
+              ...saved,
+              id: saved.id || anchor.recordId,
+              text: saved.text || anchor.text || '',
+              nativeTestId: saved.nativeTestId || anchor.nativeTestId || '',
+              author: saved.author || anchor.author || '',
+              speakerSide: saved.speakerSide || anchor.speakerSide || 'unknown',
+              messageTime: saved.messageTime || anchor.messageTime || '',
+              messageDate: date,
+              conversationId: saved.conversationId || currentConversationId(),
+              calendarAnchorScore: Number(anchor.score ?? calendarAnchorScore(saved))
+            };
+          })
+          .filter(anchor => anchor.id && anchor.text)
+          .sort((left, right) => Number(right.calendarAnchorScore || 0) - Number(left.calendarAnchorScore || 0));
+        if (!anchors.some(anchor => anchor.id === record.id) && record.text) anchors.push({ ...record, calendarAnchorScore: calendarAnchorScore(record) });
+        days.set(date, { ...record, messageDate: date, calendarDate: date, calendarAnchors: anchors });
+      });
+      return days;
+    };
+    const calendarScanStatusText = () => {
+      const count = calendarIndexCount();
+      if (calendarScanState.result === 'scanning') return t('calendarScanning', calendarScanState.step || 0, count, calendarScanState.oldest);
+      if (calendarScanState.result === 'complete') return t('calendarBuilt', count);
+      if (calendarScanState.result === 'stopped') return t('calendarStopped', count);
+      if (calendarScanState.result === 'no-scroller') return t('calendarNoScroller');
+      return t('calendarBuildHint');
+    };
+    const shiftCalendarMonth = offset => {
+      const base = /^\d{4}-\d{2}$/.test(calendarMonth) ? new Date(`${calendarMonth}-01T12:00:00`) : new Date();
+      base.setDate(1);
+      base.setMonth(base.getMonth() + offset);
+      calendarMonth = localDateKey(base).slice(0, 7);
+      calendarPreferredMonth = calendarMonth;
+    };
+    const calendarMarkup = () => {
+      const days = calendarRecordMap();
+      if (!calendarMonth) {
+        calendarMonth = calendarFocusedDate.slice(0, 7) || [...days.keys()].sort().at(-1)?.slice(0, 7) || localDateKey(new Date()).slice(0, 7);
+        calendarPreferredMonth = calendarMonth;
+      }
+      const [year, month] = calendarMonth.split('-').map(Number);
+      const first = new Date(year, month - 1, 1, 12);
+      const total = new Date(year, month, 0, 12).getDate();
+      const locale = uiLanguage() === 'ko' ? 'ko-KR' : 'zh-TW';
+      const monthLabel = new Intl.DateTimeFormat(locale, { year: 'numeric', month: 'long' }).format(first);
+      const weekdays = Array.from({ length: 7 }, (_, index) => new Intl.DateTimeFormat(locale, { weekday: 'narrow' }).format(new Date(2024, 0, 7 + index, 12)));
+      const cells = Array.from({ length: first.getDay() }, () => '<span aria-hidden="true"></span>');
+      const todayKey = localDateKey(new Date());
+      for (let day = 1; day <= total; day += 1) {
+        const key = `${calendarMonth}-${String(day).padStart(2, '0')}`;
+        const available = days.has(key);
+        const label = new Intl.DateTimeFormat(locale, { year: 'numeric', month: 'long', day: 'numeric' }).format(new Date(`${key}T12:00:00`));
+        cells.push(`<button class="xcb-console-calendar-day${available ? ' has-messages' : ''}${key === todayKey ? ' is-today' : ''}${key === calendarFocusedDate ? ' is-selected' : ''}" ${available ? `data-calendar-date="${key}" aria-label="${escape(t('calendarJump', label))}"` : 'disabled'}>${day}</button>`);
+      }
+      return `<details class="xcb-console-calendar" ${calendarOpen ? 'open' : ''}><summary><span>${escape(t('conversationCalendar'))}</span><small>${escape(t('calendarDays', days.size))}</small></summary><div class="xcb-console-calendar-body"><div class="xcb-console-calendar-header"><button data-calendar-month="-1" aria-label="${escape(t('calendarPreviousMonth'))}">‹</button><strong>${escape(monthLabel)}</strong><button data-calendar-month="1" aria-label="${escape(t('calendarNextMonth'))}">›</button></div><div class="xcb-console-calendar-weekdays">${weekdays.map(day => `<span>${escape(day)}</span>`).join('')}</div><div class="xcb-console-calendar-grid">${cells.join('')}</div>${days.size ? '' : `<p class="xcb-console-calendar-empty">${escape(t('calendarEmpty'))}</p>`}<div class="xcb-console-calendar-index"><button class="${calendarScanState.running ? 'danger' : 'primary'}" data-calendar-scan>${escape(t(calendarScanState.running ? 'calendarStop' : 'calendarBuild'))}</button><small data-calendar-scan-status>${escape(calendarScanStatusText())}</small></div></div></details>`;
+    };
+    const dataSearchResultsMarkup = rawQuery => {
+      const query = normalizeSearchText(rawQuery);
+      if (!query) return '';
+      const messageSearchResults = records().filter(record => recordSearchText(record).includes(query)).slice(0, 60);
+      const vocabularySearchResults = vocabularyRecords().filter(entry => vocabularySearchText(entry).includes(query)).slice(0, 30);
+      const messageResultRows = messageSearchResults.map(record => {
+        const matchedTranslation = [
+          ...Object.values(record.translations || {}),
+          record.translation,
+          record.todoExcerptTranslation,
+          record.noteExcerptTranslation
+        ].find(value => normalizeSearchText(value).includes(query)) || activeTranslation(record);
+        const title = record.noteText || record.todoTitle || matchedTranslation || record.text || record.id;
+        const details = [record.text, matchedTranslation && matchedTranslation !== title ? matchedTranslation : '', (record.tags || []).map(tag => `#${tag}`).join(' ')].filter(Boolean).join('\n');
+        const contextMeta = `${escape(recordContextMeta(record))}${recordAvailability(record) ? ` · ${recordAvailabilityMarkup(record)}` : ''}`;
+        if (record.manualEntry) return `<div class="xcb-console-list-item"><strong>${escape(title)}</strong><small>${escape(details || t('manualNote'))}</small><small class="xcb-console-context-meta">${contextMeta}</small></div>`;
+        return `<button class="xcb-console-list-item" data-record="${escape(record.id)}"><strong>${escape(title)}</strong><small>${escape(details)}</small><small class="xcb-console-context-meta">${contextMeta}</small></button>`;
+      }).join('');
+      const vocabularyResultRows = vocabularySearchResults.map(entry => `<button class="xcb-console-list-item xcb-console-vocabulary-card" data-open-vocabulary="${escape(entry.id)}"><strong>${escape(entry.word)}</strong>${entry.pronunciation ? `<span class="xcb-console-vocabulary-pronunciation">${escape(entry.pronunciation)}</span>` : ''}<span>${escape(entry.meaning)}</span><small class="xcb-console-vocabulary-topic">${escape(vocabularyTopic(entry))}</small></button>`).join('');
+      return `<section class="xcb-console-data-section"><h3>${escape(t('search'))}</h3><div class="xcb-console-search-results">${messageResultRows + vocabularyResultRows || `<p class="xcb-console-empty">${escape(t('noSearchResults'))}</p>`}</div></section>`;
     };
     const clearVocabularyDraft = (closeForm = false) => {
       editingVocabularyId = '';
@@ -2427,15 +3252,27 @@
     };
     const findRecordTarget = record => {
       const testIds = [record.nativeTestId, ...(record.quotedBy || []).map(item => item.nativeTestId)].filter(Boolean);
-      return [...document.querySelectorAll(selector)].find(el => testIds.includes(el.getAttribute('data-testid')))
-        || [...document.querySelectorAll(selector)].find(el => record.text && textOf(el) === record.text)
-        || null;
+      const stableMatch = [...document.querySelectorAll(selector)].find(el => testIds.includes(el.getAttribute('data-testid')));
+      if (stableMatch) return stableMatch;
+      const textMatches = [...document.querySelectorAll(selector)].filter(el => record.text && textOf(el) === record.text);
+      return textMatches.length === 1 ? textMatches[0] : null;
     };
     const searchSnippet = record => {
       const text = String(record.text || record.noteExcerpt || record.todoExcerpt || '').replace(/\s+/g, ' ').trim();
       if (text.length <= 72) return text;
       const clipped = text.slice(0, 72);
       return clipped.replace(/\s+\S*$/, '').trim() || clipped;
+    };
+    const jumpCandidatesForRecord = record => {
+      const byKey = new Map();
+      for (const candidate of [...(record.calendarAnchors || []), record]) {
+        if (!candidate?.id || !searchSnippet(candidate)) continue;
+        const key = candidate.nativeTestId || candidate.id || normalizeSearchText(candidate.text);
+        if (!byKey.has(key)) byKey.set(key, candidate);
+      }
+      return [...byKey.values()]
+        .sort((left, right) => Number(right.calendarAnchorScore ?? calendarAnchorScore(right)) - Number(left.calendarAnchorScore ?? calendarAnchorScore(left)))
+        .slice(0, 5);
     };
     const waitForSearchElement = async finder => {
       for (let attempt = 0; attempt < 24; attempt += 1) {
@@ -2451,6 +3288,10 @@
       return style.display === 'none' || style.visibility === 'hidden' ? null : candidate;
     };
     const messageSearchPanel = () => renderedElement(document.querySelector('[data-testid="dm-message-search-panel"]'));
+    const closeMessageSearchPanel = panel => {
+      const close = [...(panel?.querySelectorAll?.('button') || [])].find(button => button.querySelector('svg[data-icon="icon-close"]'));
+      close?.click();
+    };
     const messageSearchAction = () => [...document.querySelectorAll('button')].find(button =>
       renderedElement(button)
       && button.querySelector('svg[data-icon="icon-search-stroke"]')
@@ -2498,18 +3339,103 @@
       input.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
       input.dispatchEvent(new Event('change', { bubbles: true }));
     };
-    const jumpToRecord = async (record, status, button) => {
-      if (!record || button?.dataset.xcbSearching === 'true') return;
-      const target = findRecordTarget(record);
-      if (target) {
-        overlay.remove();
-        requestAnimationFrame(() => target.scrollIntoView({ behavior: 'smooth', block: 'center' }));
-        return;
+    const searchResultDate = value => {
+      const label = String(value || '').replace(/\s+/g, ' ').trim();
+      if (!label) return '';
+      const today = new Date();
+      today.setHours(12, 0, 0, 0);
+      if (/^(?:now|today|방금|오늘|剛剛|今天|\d+\s*(?:s|sec|secs|m|min|mins|h|hr|hrs|초|분|시간|秒|分鐘|小時))$/i.test(label)) return localDateKey(today);
+      if (/^(?:yesterday|어제|昨天)$/i.test(label)) {
+        today.setDate(today.getDate() - 1);
+        return localDateKey(today);
       }
-      const query = searchSnippet(record);
+      const dayOffset = label.match(/^(\d+)\s*(?:d|day|days|일|天)$/i);
+      if (dayOffset) {
+        today.setDate(today.getDate() - Number(dayOffset[1]));
+        return localDateKey(today);
+      }
+      if (/\b(?:w|week|weeks|주|週|周)\b/i.test(label)) return '';
+      return parseDateDivider(label);
+    };
+    const messageSearchResults = panel => [...(panel?.querySelectorAll?.('li') || [])].map(node => {
+      const textNode = node.querySelector('.text-gray-700.line-clamp-2.text-body')
+        || node.querySelector('[class*="text-gray-700"][class*="line-clamp-2"]');
+      const authorNode = node.querySelector('.break-all.text-text.line-clamp-1.font-bold')
+        || node.querySelector('[class*="break-all"][class*="line-clamp-1"][class*="font-bold"]');
+      const text = textNode?.textContent?.replace(/\s+/g, ' ').trim() || '';
+      const author = authorNode?.textContent?.replace(/\s+/g, ' ').trim() || '';
+      const time = [...node.querySelectorAll('.font-chirp')]
+        .map(item => item.textContent?.replace(/\s+/g, ' ').trim() || '')
+        .find(value => value && value !== text && value !== author && /^(?:now|today|yesterday|방금|오늘|어제|剛剛|今天|昨天|\d+\s*(?:s|sec|secs|m|min|mins|h|hr|hrs|d|day|days|w|week|weeks|초|분|시간|일|주|秒|分鐘|小時|天|週|周)|[A-Za-z]{3,9}\s+\d{1,2}(?:,\s*\d{4})?)$/i.test(value)) || '';
+      return { node, text, author, time, date: searchResultDate(time) };
+    }).filter(result => result.text);
+    const searchResultCount = panel => {
+      const text = panel?.textContent || '';
+      const match = text.match(/(\d+)\s*(?:message|messages|則訊息|개의 메시지|개 메시지)\s*(?:found|찾음)?/i);
+      return match ? Number(match[1]) : null;
+    };
+    const waitForMessageSearchResults = async (panel, expectedQuery) => {
+      let previousSignature = '';
+      let stablePasses = 0;
+      for (let attempt = 0; attempt < 30; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const input = panel?.querySelector('input');
+        if (!input || input.value !== expectedQuery) continue;
+        const results = messageSearchResults(panel);
+        const signature = `${searchResultCount(panel) ?? ''}|${results.map(result => `${result.author}|${result.text}|${result.time}`).join('\n')}`;
+        stablePasses = signature && signature === previousSignature ? stablePasses + 1 : 0;
+        previousSignature = signature;
+        if (stablePasses >= 2) return results;
+      }
+      return messageSearchResults(panel);
+    };
+    const uniqueSearchResult = (panel, record, results) => {
+      // Search cards do not expose a message ID. Only auto-click when X itself
+      // reports exactly one result; a single mounted <li> can still be just one
+      // row from a much larger virtualized result list.
+      if (searchResultCount(panel) !== 1) return null;
+      const sourceText = normalizeSearchText(record.text);
+      let matches = results.filter(result => normalizeSearchText(result.text) === sourceText);
+      if (!matches.length && results.length === 1) matches = results;
+      const expectedDate = record.messageDate || record.calendarDate || '';
+      if (expectedDate) {
+        const dated = matches.filter(result => result.date === expectedDate);
+        if (dated.length) matches = dated;
+      }
+      const expectedAuthor = !['', 'self', 'other'].includes(String(record.author || '').toLowerCase()) ? normalizeSearchText(record.author) : '';
+      if (expectedAuthor) {
+        const authored = matches.filter(result => normalizeSearchText(result.author) === expectedAuthor);
+        if (authored.length) matches = authored;
+      }
+      return matches.length === 1 ? matches[0] : null;
+    };
+    const waitForRecordTarget = async candidates => {
+      for (let attempt = 0; attempt < 45; attempt += 1) {
+        const target = candidates.map(findRecordTarget).find(Boolean);
+        if (target) return target;
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      return null;
+    };
+    const jumpToRecord = async (record, status, button, options = {}) => {
+      if (!record || button?.dataset.xcbSearching === 'true') return false;
+      const keepOverlay = !!options.keepOverlay;
+      if (record.messageDate || record.calendarDate) {
+        setCalendarFocus(record.messageDate || record.calendarDate);
+        calendarMonth = calendarPreferredMonth;
+      }
+      const candidates = jumpCandidatesForRecord(record);
+      const target = candidates.map(findRecordTarget).find(Boolean);
+      if (target) {
+        if (!keepOverlay) overlay.remove();
+        target.scrollIntoView({ behavior: keepOverlay ? 'auto' : 'smooth', block: 'center' });
+        if (keepOverlay) await new Promise(resolve => setTimeout(resolve, 220));
+        return true;
+      }
+      const query = searchSnippet(candidates[0] || record);
       if (!query) {
         if (status) status.textContent = t('xSearchNoText');
-        return;
+        return false;
       }
       if (button) {
         button.dataset.xcbSearching = 'true';
@@ -2521,12 +3447,48 @@
       if (!input) {
         if (status) status.textContent = t('xSearchUnavailable');
         if (button) { delete button.dataset.xcbSearching; button.disabled = false; }
-        return;
+        return false;
+      }
+      let matched = null;
+      let matchedCandidate = null;
+      for (let index = 0; index < candidates.length; index += 1) {
+        const candidate = candidates[index];
+        const candidateQuery = searchSnippet(candidate);
+        if (!candidateQuery) continue;
+        if (status) status.textContent = t('xSearchTrying', index + 1, candidates.length);
+        setNativeInputValue(input, candidateQuery);
+        const results = await waitForMessageSearchResults(panel, candidateQuery);
+        matched = uniqueSearchResult(panel, candidate, results);
+        if (matched) {
+          matchedCandidate = candidate;
+          break;
+        }
+      }
+      if (matched) {
+        const clickable = matched.node.querySelector('.cursor-pointer') || matched.node;
+        if (!keepOverlay) overlay.remove();
+        clickable.click();
+        if (!keepOverlay) return true;
+        const located = await waitForRecordTarget([matchedCandidate, ...candidates].filter(Boolean));
+        closeMessageSearchPanel(messageSearchPanel() || panel);
+        if (located) {
+          located.scrollIntoView({ behavior: 'auto', block: 'center' });
+          await new Promise(resolve => setTimeout(resolve, 220));
+        }
+        if (button) { delete button.dataset.xcbSearching; button.disabled = false; }
+        return !!located;
       }
       setNativeInputValue(input, query);
-      await new Promise(resolve => setTimeout(resolve, 250));
-      overlay.remove();
-      input.focus();
+      await waitForMessageSearchResults(panel, query);
+      if (status) status.textContent = t('xSearchAmbiguous');
+      if (keepOverlay) {
+        closeMessageSearchPanel(panel);
+        if (button) { delete button.dataset.xcbSearching; button.disabled = false; }
+      } else {
+        overlay.remove();
+        input.focus();
+      }
+      return false;
     };
     const resolvedContextItem = item => {
       const current = item?.id ? state.messages[item.id] : null;
@@ -2810,27 +3772,6 @@
         panel = `<div class="xcb-console-panel"><details class="xcb-console-vocabulary-editor" data-vocabulary-editor ${vocabularyFormOpen ? 'open' : ''}><summary>${escape(editorHeading)}</summary><div class="xcb-console-vocabulary-form"><div class="xcb-console-vocabulary-grid"><label class="xcb-console-field"><span>${escape(t('vocabularyWord'))}</span><input data-vocabulary-word value="${escape(vocabularyDraft.word)}" placeholder="${escape(t('vocabularyWordPlaceholder'))}"></label><label class="xcb-console-field"><span>${escape(t('vocabularyPronunciation'))}</span><input data-vocabulary-pronunciation value="${escape(vocabularyDraft.pronunciation)}" placeholder="${escape(t('vocabularyPronunciationPlaceholder'))}"></label></div><label class="xcb-console-field"><span>${escape(t('vocabularyMeaning'))}</span><textarea data-vocabulary-meaning placeholder="${escape(t('vocabularyMeaningPlaceholder'))}">${escape(vocabularyDraft.meaning)}</textarea></label><label class="xcb-console-field"><span>${escape(t('vocabularyTopic'))}</span><input data-vocabulary-topic value="${escape(vocabularyDraft.topic)}" placeholder="${escape(t('vocabularyTopicPlaceholder'))}"></label><div class="xcb-console-data-actions"><button class="xcb-console-vocabulary-save primary">${escape(t(editingVocabularyId ? 'vocabularyUpdate' : 'vocabularyAdd'))}</button>${editingVocabularyId ? `<button class="xcb-console-vocabulary-cancel">${escape(t('vocabularyCancelEdit'))}</button>` : ''}</div><p class="xcb-console-vocabulary-status xcb-console-muted" aria-live="polite"></p></div></details><div class="xcb-console-section-heading"><h3>${escape(t('vocabularyCount', allVocabulary.length))}</h3><button class="xcb-console-copy-organized" data-copy-organized="vocabulary">${escape(t('copyOrganized'))}</button></div><div class="xcb-console-vocabulary-groups">${vocabularyGroups || `<p class="xcb-console-empty">${escape(t('vocabularyEmpty'))}</p>`}</div></div>`;
       }
       if (tab === 'data') {
-        const allRecords = records();
-        const query = dataQuery.toLocaleLowerCase();
-        const messageSearchResults = query ? allRecords.filter(record => recordSearchText(record).includes(query)).slice(0, 60) : [];
-        const vocabularySearchResults = query ? vocabularyRecords().filter(entry => vocabularySearchText(entry).includes(query)).slice(0, 30) : [];
-        const messageResultRows = messageSearchResults.map(record => {
-          const matchedTranslation = [
-            ...Object.values(record.translations || {}),
-            record.translation,
-            record.todoExcerptTranslation,
-            record.noteExcerptTranslation
-          ]
-            .find(value => String(value || '').toLocaleLowerCase().includes(query))
-            || activeTranslation(record);
-          const title = record.noteText || record.todoTitle || matchedTranslation || record.text || record.id;
-          const details = [record.text, matchedTranslation && matchedTranslation !== title ? matchedTranslation : '', (record.tags || []).map(tag => `#${tag}`).join(' ')].filter(Boolean).join('\n');
-          const contextMeta = `${escape(recordContextMeta(record))}${recordAvailability(record) ? ` · ${recordAvailabilityMarkup(record)}` : ''}`;
-          if (record.manualEntry) return `<div class="xcb-console-list-item"><strong>${escape(title)}</strong><small>${escape(details || t('manualNote'))}</small><small class="xcb-console-context-meta">${contextMeta}</small></div>`;
-          return `<button class="xcb-console-list-item" data-record="${escape(record.id)}"><strong>${escape(title)}</strong><small>${escape(details)}</small><small class="xcb-console-context-meta">${contextMeta}</small></button>`;
-        }).join('');
-        const vocabularyResultRows = vocabularySearchResults.map(entry => `<button class="xcb-console-list-item xcb-console-vocabulary-card" data-open-vocabulary="${escape(entry.id)}"><strong>${escape(entry.word)}</strong>${entry.pronunciation ? `<span class="xcb-console-vocabulary-pronunciation">${escape(entry.pronunciation)}</span>` : ''}<span>${escape(entry.meaning)}</span><small class="xcb-console-vocabulary-topic">${escape(vocabularyTopic(entry))}</small></button>`).join('');
-        const resultRows = messageResultRows + vocabularyResultRows;
         const branches = scopedBranchRecords();
         if (selectedBranchId && !state.branches[selectedBranchId]) selectedBranchId = '';
         const branchRows = branches.map(branch => `<div class="xcb-console-branch-row"><button class="xcb-console-list-item" data-select-branch="${escape(branch.id)}"><strong>${escape(branch.title)}</strong><small>${escape(t('branchCount', (branch.messageIds || []).length))}</small></button><button class="xcb-console-list-remove" data-delete-branch="${escape(branch.id)}" aria-label="${escape(t('deleteBranch'))}" title="${escape(t('deleteBranch'))}">×</button></div>`).join('');
@@ -2856,7 +3797,7 @@
         const currentConversation = captureConversation();
         const importConflictRows = (pendingImport?.conflicts || []).map(({ local, remote }) => `<div class="xcb-console-conflict"><strong>${escape(remote.name || remote.syncId)}</strong><div class="xcb-console-conflict-copy"><span>${escape(t('keepLocal'))}<small>${escape(local.translation || '')}</small></span><span>${escape(t('useBackup'))}<small>${escape(remote.translation || '')}</small></span></div><select data-conflict-choice="${escape(remote.syncId)}"><option value="local">${escape(t('keepLocal'))}</option><option value="remote">${escape(t('useBackup'))}</option></select></div>`).join('');
         const importPreviewPanel = pendingImport ? `<section class="xcb-console-data-section xcb-console-import-preview"><h3>${escape(t('importPreview'))}</h3><p>${escape(t('importSummary', pendingImport.totals.added, pendingImport.totals.updated, pendingImport.totals.conflicts, pendingImport.totals.unchanged))}</p>${importConflictRows ? `<h4>${escape(t('conflictTitle'))}</h4><p class="xcb-console-muted">${escape(t('conflictHelp'))}</p>${importConflictRows}` : ''}<div class="xcb-console-data-actions"><button class="xcb-console-apply-import primary">${escape(t('applyMerge'))}</button><button class="xcb-console-cancel-import">${escape(t('cancelImport'))}</button></div></section>` : '';
-        panel = `<div class="xcb-console-panel"><div class="xcb-console-note-add"><input data-data-search value="${escape(dataQuery)}" placeholder="${escape(t('searchAll'))}"><button class="xcb-console-data-search">${escape(t('search'))}</button></div>${query ? `<section class="xcb-console-data-section"><h3>${escape(t('search'))}</h3><div class="xcb-console-search-results">${resultRows || `<p class="xcb-console-empty">${escape(t('noSearchResults'))}</p>`}</div></section>` : ''}<section class="xcb-console-data-section"><h3>${escape(t('branches'))}</h3><div class="xcb-console-list">${branchRows || `<p class="xcb-console-empty">${escape(t('noBranches'))}</p>`}</div>${selectedBranch ? `<div class="xcb-console-list">${branchMessages}</div>` : ''}</section><section class="xcb-console-data-section"><h3>${escape(t('exportData'))}</h3><div class="xcb-console-data-actions"><button class="xcb-console-copy-markdown">${escape(t('copyMarkdown'))}</button><button class="xcb-console-download-markdown primary">${escape(t('downloadMarkdown'))}</button></div></section><section class="xcb-console-data-section xcb-console-notion"><div class="xcb-console-section-heading"><h3>${escape(t('notionBackup'))}</h3><a href="${NOTION_HOME_URL}" target="_blank" rel="noopener noreferrer">${escape(t('notionOpen'))}</a></div><details class="xcb-console-connection" ${notionConfigured ? '' : 'open'}><summary><span>${escape(t('notionConnection'))}</span><span class="xcb-console-connection-state">${escape(t(notionConfigured ? 'notionConnected' : 'notionNotConnected'))}</span></summary><div class="xcb-console-connection-fields"><label class="xcb-console-field"><span>${escape(t('notionEndpoint'))}</span><input data-setting="notion-endpoint" type="url" inputmode="url" value="${escape(settings.notionEndpoint || '')}" placeholder="${escape(t('notionEndpointPlaceholder'))}"></label><label class="xcb-console-field"><span>${escape(t('notionSecret'))}</span><input data-setting="notion-secret" type="password" autocomplete="off" placeholder="${escape(sessionNotionSecret ? t('apiConfigured') : t('notionSecretPlaceholder'))}"></label><label class="xcb-console-toggle"><span>${escape(t('notionRemember'))}</span><input data-setting="remember-notion-secret" type="checkbox" ${settings.rememberNotionSecret ? 'checked' : ''}></label><p class="xcb-console-muted">${escape(t('notionWarning'))}</p></div></details><p class="xcb-console-sync-kind">${escape(syncHint)}<br>${escape(t('notionRestoreHint'))}</p>${collapsedLegacy ? `<p class="xcb-console-muted">${escape(t('notionLegacyHidden', collapsedLegacy))}</p>` : ''}<p class="xcb-console-muted"><strong>${escape(pendingSummary)}</strong></p><div class="xcb-console-data-actions"><button class="xcb-console-notion-sync primary">${escape(syncLabel)}</button><button class="xcb-console-notion-pull">${escape(t('notionRestore'))}</button><button class="xcb-console-notion-export">${escape(t('notionExportJson'))}</button></div><div class="xcb-console-sync-state"><p class="xcb-console-notion-status xcb-console-muted" aria-live="polite">${escape(notionStatusText)}</p>${fullSync ? '' : `<button class="xcb-console-notion-rebuild xcb-console-text-button">${escape(t('notionRebuild'))}</button>`}</div></section><p class="xcb-console-status" aria-live="polite"></p></div>`;
+        panel = `<div class="xcb-console-panel"><div class="xcb-console-note-add"><input data-data-search type="search" enterkeyhint="search" autocomplete="off" spellcheck="false" value="${escape(dataQuery)}" placeholder="${escape(t('searchAll'))}"><button class="xcb-console-data-search">${escape(t('search'))}</button></div>${calendarMarkup()}<div data-data-search-results>${dataSearchResultsMarkup(dataQuery)}</div><section class="xcb-console-data-section"><h3>${escape(t('branches'))}</h3><div class="xcb-console-list">${branchRows || `<p class="xcb-console-empty">${escape(t('noBranches'))}</p>`}</div>${selectedBranch ? `<div class="xcb-console-list">${branchMessages}</div>` : ''}</section><section class="xcb-console-data-section"><h3>${escape(t('exportData'))}</h3><div class="xcb-console-data-actions"><button class="xcb-console-copy-markdown">${escape(t('copyMarkdown'))}</button><button class="xcb-console-download-markdown primary">${escape(t('downloadMarkdown'))}</button></div></section><section class="xcb-console-data-section xcb-console-notion"><div class="xcb-console-section-heading"><h3>${escape(t('notionBackup'))}</h3><a href="${NOTION_HOME_URL}" target="_blank" rel="noopener noreferrer">${escape(t('notionOpen'))}</a></div><details class="xcb-console-connection" ${notionConfigured ? '' : 'open'}><summary><span>${escape(t('notionConnection'))}</span><span class="xcb-console-connection-state">${escape(t(notionConfigured ? 'notionConnected' : 'notionNotConnected'))}</span></summary><div class="xcb-console-connection-fields"><label class="xcb-console-field"><span>${escape(t('notionEndpoint'))}</span><input data-setting="notion-endpoint" type="url" inputmode="url" value="${escape(settings.notionEndpoint || '')}" placeholder="${escape(t('notionEndpointPlaceholder'))}"></label><label class="xcb-console-field"><span>${escape(t('notionSecret'))}</span><input data-setting="notion-secret" type="password" autocomplete="off" placeholder="${escape(sessionNotionSecret ? t('apiConfigured') : t('notionSecretPlaceholder'))}"></label><label class="xcb-console-toggle"><span>${escape(t('notionRemember'))}</span><input data-setting="remember-notion-secret" type="checkbox" ${settings.rememberNotionSecret ? 'checked' : ''}></label><p class="xcb-console-muted">${escape(t('notionWarning'))}</p></div></details><p class="xcb-console-sync-kind">${escape(syncHint)}<br>${escape(t('notionRestoreHint'))}</p>${collapsedLegacy ? `<p class="xcb-console-muted">${escape(t('notionLegacyHidden', collapsedLegacy))}</p>` : ''}<p class="xcb-console-muted"><strong>${escape(pendingSummary)}</strong></p><div class="xcb-console-data-actions"><button class="xcb-console-notion-sync primary">${escape(syncLabel)}</button><button class="xcb-console-notion-pull">${escape(t('notionRestore'))}</button><button class="xcb-console-notion-export">${escape(t('notionExportJson'))}</button></div><div class="xcb-console-sync-state"><p class="xcb-console-notion-status xcb-console-muted" aria-live="polite">${escape(notionStatusText)}</p>${fullSync ? '' : `<button class="xcb-console-notion-rebuild xcb-console-text-button">${escape(t('notionRebuild'))}</button>`}</div></section><p class="xcb-console-status" aria-live="polite"></p></div>`;
         panel = panel.replace('<div class="xcb-console-panel">', `<div class="xcb-console-panel"><label class="xcb-console-field"><span>${escape(t('conversationName'))}</span><input data-conversation-title value="${escape(currentConversation?.title || conversationFallback(currentConversationId()))}" placeholder="${escape(t('conversationNamePlaceholder'))}"></label>${importPreviewPanel}`);
         panel = panel.replace(`<button class="xcb-console-download-markdown primary">${escape(t('downloadMarkdown'))}</button>`, `<button class="xcb-console-download-markdown primary">${escape(t('downloadMarkdown'))}</button><button class="xcb-console-import-json">${escape(t('backupImport'))}</button><input class="xcb-console-import-file" type="file" accept="application/json,.json" hidden>`);
         panel = panel.replace(`<label class="xcb-console-toggle"><span>${escape(t('notionRemember'))}</span>`, `<label class="xcb-console-toggle"><span>${escape(t('notionAutoSync'))}</span><input data-setting="notion-auto-sync" type="checkbox" ${settings.notionAutoSync ? 'checked' : ''}></label><p class="xcb-console-muted">${escape(t('notionAutoHint'))}</p><label class="xcb-console-toggle"><span>${escape(t('notionRemember'))}</span>`);
@@ -2873,6 +3814,15 @@
         panel = `<div class="xcb-console-panel">${providerSwitch}${providerFields}<label class="xcb-console-field"><span>${escape(t('contextBefore'))}</span><select data-setting="before">${countOptions(settings.contextBefore)}</select></label><label class="xcb-console-field"><span>${escape(t('contextAfter'))}</span><select data-setting="after">${countOptions(settings.contextAfter)}</select></label><label class="xcb-console-toggle"><span>${escape(t('includeQuote'))}</span><input data-setting="include-quote" type="checkbox" ${settings.includeQuote ? 'checked' : ''}></label></div>`;
       }
       overlay.innerHTML = `<section class="xcb-console-editor" role="dialog" aria-modal="true" lang="${uiLanguage() === 'ko' ? 'ko' : 'zh-Hant'}"><header>Context Bridge <small class="xcb-console-version">v${VERSION}</small></header>${nav}${dataScopeSwitch}${panel}<div class="xcb-console-actions"><button class="xcb-console-master">${escape(t('clean'))}</button><button class="xcb-console-cancel">${escape(t('cancel'))}</button><button class="xcb-console-done">${escape(t('done'))}</button></div></section>`;
+      const calendarBody = overlay.querySelector('.xcb-console-calendar-body');
+      if (calendarBody && !calendarBody.querySelector('[data-calendar-scan-live]')) {
+        const live = document.createElement('div');
+        live.className = `xcb-console-calendar-scan-live${calendarScanState.running ? ' is-running' : ''}`;
+        live.dataset.calendarScanLive = '';
+        live.setAttribute('aria-live', 'polite');
+        live.innerHTML = `<span class="xcb-console-calendar-scan-dot" aria-hidden="true"></span><strong data-calendar-scan-live-label>${escape(calendarScanStatusText())}</strong>${calendarScanState.running ? '<span class="xcb-console-calendar-scan-bar" aria-hidden="true"><i></i></span>' : ''}`;
+        calendarBody.prepend(live);
+      }
       overlay.querySelectorAll('[data-settings-tab]').forEach(button => button.onclick = () => { capture(); tab = button.dataset.settingsTab; render(); });
       overlay.querySelectorAll('[data-direction]').forEach(button => button.onclick = () => {
         capture();
@@ -2945,6 +3895,7 @@
       };
       overlay.querySelector('.xcb-console-master').onclick = () => window.__xcbConsoleCleanup?.();
       const closeOverlay = () => {
+        clearTimeout(dataSearchTimer);
         overlay.remove();
       };
       overlay.querySelector('.xcb-console-cancel').onclick = closeOverlay;
@@ -2963,6 +3914,7 @@
         }
       });
       overlay.querySelectorAll('[data-record]').forEach(button => button.onclick = () => {
+        if (button.closest('[data-data-search-results]')) return;
         detailEditing = false;
         detailRecordId = button.dataset.record;
         detailReturnTab = tab;
@@ -3035,7 +3987,10 @@
         });
       });
       overlay.querySelectorAll('[data-edit-vocabulary]').forEach(button => button.onclick = () => editVocabulary(button.dataset.editVocabulary));
-      overlay.querySelectorAll('[data-open-vocabulary]').forEach(button => button.onclick = () => editVocabulary(button.dataset.openVocabulary));
+      overlay.querySelectorAll('[data-open-vocabulary]').forEach(button => button.onclick = () => {
+        if (button.closest('[data-data-search-results]')) return;
+        editVocabulary(button.dataset.openVocabulary);
+      });
       overlay.querySelectorAll('[data-remove-vocabulary]').forEach(button => button.onclick = event => {
         event.stopPropagation();
         if (!confirm(t('vocabularyDeleteConfirm'))) return;
@@ -3058,15 +4013,118 @@
         save();
         render();
       });
-      const runDataSearch = () => {
-        dataQuery = overlay.querySelector('[data-data-search]')?.value.trim() || '';
-        render();
+      const searchInput = overlay.querySelector('[data-data-search]');
+      const searchResultsHost = overlay.querySelector('[data-data-search-results]');
+      const updateDataSearchResults = () => {
+        clearTimeout(dataSearchTimer);
+        dataSearchTimer = 0;
+        dataQuery = searchInput?.value || '';
+        if (searchResultsHost) searchResultsHost.innerHTML = dataSearchResultsMarkup(dataQuery);
       };
-      overlay.querySelector('.xcb-console-data-search')?.addEventListener('click', runDataSearch);
-      overlay.querySelector('[data-data-search]')?.addEventListener('keydown', event => {
-        if (event.key === 'Enter' && !event.isComposing) {
+      const scheduleDataSearch = () => {
+        clearTimeout(dataSearchTimer);
+        dataSearchTimer = setTimeout(updateDataSearchResults, 180);
+      };
+      searchResultsHost?.addEventListener('click', event => {
+        const recordButton = event.target.closest('[data-record]');
+        if (recordButton && searchResultsHost.contains(recordButton)) {
+          detailEditing = false;
+          detailRecordId = recordButton.dataset.record;
+          detailReturnTab = tab;
+          render();
+          return;
+        }
+        const vocabularyButton = event.target.closest('[data-open-vocabulary]');
+        if (vocabularyButton && searchResultsHost.contains(vocabularyButton)) editVocabulary(vocabularyButton.dataset.openVocabulary);
+      });
+      overlay.querySelector('.xcb-console-data-search')?.addEventListener('click', updateDataSearchResults);
+      searchInput?.addEventListener('compositionstart', () => { dataSearchComposing = true; });
+      searchInput?.addEventListener('compositionend', event => {
+        dataSearchComposing = false;
+        dataQuery = event.currentTarget.value;
+        scheduleDataSearch();
+      });
+      searchInput?.addEventListener('input', event => {
+        dataQuery = event.currentTarget.value;
+        if (!dataSearchComposing && !event.isComposing) scheduleDataSearch();
+      });
+      searchInput?.addEventListener('keydown', event => {
+        event.stopPropagation();
+        if (event.key === 'Enter' && !event.isComposing && !dataSearchComposing) {
           event.preventDefault();
-          runDataSearch();
+          updateDataSearchResults();
+        }
+      });
+      searchInput?.addEventListener('keyup', event => event.stopPropagation());
+      const calendar = overlay.querySelector('.xcb-console-calendar');
+      calendar?.addEventListener('toggle', () => { calendarOpen = calendar.open; });
+      overlay.querySelectorAll('[data-calendar-month]').forEach(button => button.onclick = event => {
+        event.preventDefault();
+        calendarOpen = true;
+        shiftCalendarMonth(Number(button.dataset.calendarMonth) || 0);
+        render();
+      });
+      overlay.querySelectorAll('[data-calendar-date]').forEach(button => button.onclick = () => {
+        const record = calendarRecordMap().get(button.dataset.calendarDate);
+        if (record) jumpToRecord(record, overlay.querySelector('.xcb-console-status'), button);
+      });
+      const calendarScanButton = overlay.querySelector('[data-calendar-scan]');
+      calendarScanButton?.addEventListener('click', async () => {
+        if (calendarScanTask) {
+          calendarScanStopRequested = true;
+          calendarScanButton.disabled = true;
+          return;
+        }
+        calendarScanButton.textContent = t('calendarStop');
+        calendarScanButton.classList.remove('primary');
+        calendarScanButton.classList.add('danger');
+        const oldestCachedRecord = [...calendarRecordMap().entries()]
+          .sort(([left], [right]) => left.localeCompare(right))[0]?.[1] || null;
+        await runCalendarIndexScan(progress => {
+          if (!overlay.isConnected) return;
+          const status = overlay.querySelector('[data-calendar-scan-status]');
+          const count = overlay.querySelector('.xcb-console-calendar>summary small');
+          const live = overlay.querySelector('[data-calendar-scan-live]');
+          const liveLabel = overlay.querySelector('[data-calendar-scan-live-label]');
+          if (live) {
+            const running = progress.result === 'scanning';
+            live.classList.toggle('is-running', running);
+            if (running && !live.querySelector('.xcb-console-calendar-scan-bar')) live.insertAdjacentHTML('beforeend', '<span class="xcb-console-calendar-scan-bar" aria-hidden="true"><i></i></span>');
+            if (!running) live.querySelector('.xcb-console-calendar-scan-bar')?.remove();
+          }
+          if (liveLabel) {
+            liveLabel.textContent = progress.result === 'scanning'
+              ? t('calendarScanning', progress.step || 0, progress.count, progress.oldest)
+              : progress.result === 'complete'
+                ? t('calendarBuilt', progress.count)
+                : progress.result === 'stopped'
+                  ? t('calendarStopped', progress.count)
+                  : t('calendarNoScroller');
+          }
+          if (status) {
+            status.textContent = progress.result === 'scanning'
+              ? t('calendarScanning', progress.step || 0, progress.count, progress.oldest)
+              : progress.result === 'complete'
+                ? t('calendarBuilt', progress.count)
+                : progress.result === 'stopped'
+                  ? t('calendarStopped', progress.count)
+                  : t('calendarNoScroller');
+          }
+          if (count) count.textContent = t('calendarDays', progress.count);
+        }, async () => {
+          // A stopped scan in the same live page already has a precise mounted
+          // cursor. Across reloads, reopen the oldest cached day through X's
+          // own search, but only when one result is unambiguous.
+          if (!oldestCachedRecord || (calendarScanResume && sameConversation(calendarScanResume.conversationId, currentConversationId()))) return false;
+          const status = overlay.querySelector('[data-calendar-scan-status]');
+          const liveLabel = overlay.querySelector('[data-calendar-scan-live-label]');
+          if (status) status.textContent = t('locatingInX');
+          if (liveLabel) liveLabel.textContent = t('locatingInX');
+          return jumpToRecord(oldestCachedRecord, status, null, { keepOverlay: true });
+        });
+        if (overlay.isConnected) {
+          calendarOpen = true;
+          render();
         }
       });
       overlay.querySelectorAll('[data-select-branch]').forEach(button => button.onclick = () => {
@@ -3362,7 +4420,7 @@
   let autoRunInFlight = false;
   let autoRerunRequested = false;
   const scheduleAutoTranslation = (delay = 350) => {
-    if (!settings.masterEnabled) return;
+    if (!settings.masterEnabled || calendarScanTask) return;
     // X mutates the conversation DOM constantly. Resetting this timer for every
     // mutation can starve translation forever. Keep the earliest due run while
     // enforcing a small gap so continuous scrolling cannot start overlapping scans.
@@ -3396,7 +4454,9 @@
   };
   async function autoTranslateVisible() {
     if (!settings.masterEnabled) return;
+    captureVisibleCalendarFirstMessages();
     const visible = [...document.querySelectorAll(selector)].map((el, index) => ({ el, record: recordFor(el, index) }));
+    syncCalendarFocusFromViewport(visible);
     visible.forEach(({ el, record }) => draw(el, record));
     const backgroundRecords = [];
     for (const record of Object.values(state.messages)) {
@@ -3559,6 +4619,19 @@
     location.reload();
   };
   window.__xcbConsoleCleanup = () => {
+    if (window.__xcbChatGPTWebListener) {
+      window.removeEventListener('message', window.__xcbChatGPTWebListener);
+      delete window.__xcbChatGPTWebListener;
+    }
+    for (const pending of pendingChatGPTWebRequests.values()) {
+      clearInterval(pending.pollTimer);
+      chatGPTStoreDelete(pending.requestStoreKey);
+      chatGPTStoreDelete(pending.resultStoreKey);
+      if (chatGPTStoreGet(CHATGPT_LATEST_REQUEST_KEY) === pending.requestId) chatGPTStoreDelete(CHATGPT_LATEST_REQUEST_KEY);
+    }
+    pendingChatGPTWebRequests.clear();
+    calendarScanDisposed = true;
+    calendarScanStopRequested = true;
     flushSave();
     document.removeEventListener('contextmenu', onContext, true);
     document.removeEventListener('click', onTouchClick, true);
@@ -3580,6 +4653,7 @@
     clearTimeout(notionAutoTimer);
     restoreAllXcbDom();
     document.getElementById(STYLE_ID)?.remove();
+    document.getElementById(CALENDAR_LIVE_STYLE_ID)?.remove();
 
     // Keep an installed extension visually and interactively paused. Without
     // this, its MutationObserver immediately recreates the old button/window.
