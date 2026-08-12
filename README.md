@@ -26,7 +26,7 @@ Userscript 安裝網址：
 
 完整自動流程必須使用 Violentmonkey 安裝版，因為同一支 userscript 需要同時在 X 與 `chatgpt.com` 執行。只把 `CONSOLE_TEST.js` 貼進 X 主控台無法跨網站注入 ChatGPT，也不能可靠地自動取回回覆。
 
-從 v0.10.22 起，X 會先把任務寫入 Violentmonkey 的跨分頁共用儲存，再開啟 ChatGPT；ChatGPT 分頁會取出 prompt、填入、送出，等回覆停止生成後寫回結果，X 再自動套用譯文與語氣說明。v0.10.23 另加入跨分頁變更監聽，避免 X 一直停在「正在自動送出」。更新舊版腳本時，必須接受新增的 `GM_setValue`、`GM_getValue`、`GM_deleteValue`、`GM_addValueChangeListener`、`GM_removeValueChangeListener` 權限，並確認 Violentmonkey 在 `x.com` 與 `chatgpt.com` 兩個網站都已啟用此腳本。
+從 v0.10.22 起，X 會先把任務寫入 Violentmonkey 的跨分頁共用儲存，再開啟 ChatGPT；ChatGPT 分頁會取出 prompt、填入、送出，等回覆停止生成後寫回結果，X 再自動套用譯文與語氣說明。v0.10.23 加入跨分頁變更監聽，避免 X 一直停在「正在自動送出」；v0.10.24 改以頁面狀態觸發送出確認，並把完成穩定等待由 1.8 秒縮短為 0.65 秒。更新舊版腳本時，必須接受新增的 `GM_setValue`、`GM_getValue`、`GM_deleteValue`、`GM_addValueChangeListener`、`GM_removeValueChangeListener` 權限，並確認 Violentmonkey 在 `x.com` 與 `chatgpt.com` 兩個網站都已啟用此腳本。
 
 不要上傳 Notion Token、同步密碼、任何 API Key、`.dev.vars` 或本機備份 JSON。
 

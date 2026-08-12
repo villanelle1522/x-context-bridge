@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         X Context Bridge
 // @namespace    https://github.com/villanelle1522/x-context-bridge
-// @version      0.10.23-test
+// @version      0.10.24-test
 // @description  X 私訊翻譯、待做、筆記、單字本、搜尋與 Notion 跨裝置同步
 // @match        https://x.com/messages*
 // @match        https://x.com/messages/*
@@ -34,7 +34,7 @@
  Remove it with: window.__xcbConsoleCleanup()
 */
 (() => {
-  const VERSION = '0.10.23-test';
+  const VERSION = '0.10.24-test';
   const NOTION_SYNC_EPOCH = 2;
   const STYLE_ID = 'xcb-console-style';
   const CALENDAR_LIVE_STYLE_ID = 'xcb-console-calendar-live-style';
@@ -169,13 +169,11 @@
       const button = await waitFor(sendButton, 10000).catch(() => null);
       if (button) {
         button.click();
-        await new Promise(resolve => setTimeout(resolve, 500));
-        return generationActive() || !inputText(input);
+        return !!(await waitFor(() => generationActive() || !inputText(input), 3000).catch(() => false));
       }
       input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
       input.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true, cancelable: true }));
-      await new Promise(resolve => setTimeout(resolve, 500));
-      return generationActive() || !inputText(input);
+      return !!(await waitFor(() => generationActive() || !inputText(input), 3000).catch(() => false));
     };
     const watchResponse = baseline => {
       let last = '';
@@ -186,7 +184,7 @@
         const candidate = messages.at(-1) || '';
         const isNew = candidate && (messages.length > baseline.length || candidate !== baseline.at(-1));
         if (isNew && candidate !== last) { last = candidate; stableSince = Date.now(); }
-        if (isNew && candidate && stableSince && !generationActive() && Date.now() - stableSince > 1800) {
+        if (isNew && candidate && stableSince && !generationActive() && Date.now() - stableSince > 650) {
           clearInterval(timer);
           post('result', { text: candidate });
           chatGPTBridgeToast('X Context Bridge：ChatGPT 回覆已回傳。');
@@ -195,17 +193,17 @@
           post('error', { message: 'ChatGPT response timeout' });
           chatGPTBridgeToast('X Context Bridge：等待 ChatGPT 回覆逾時。');
         }
-      }, 400);
+      }, 120);
     };
     (async () => {
       const input = await waitFor(promptInput);
       const baseline = assistantTexts();
       const prompt = String(packet.prompt || '');
       setPrompt(input, prompt);
-      await new Promise(resolve => setTimeout(resolve, 250));
+      if (!inputText(input)) await waitFor(() => inputText(input), 600).catch(() => null);
       if (!inputText(input)) {
         setPrompt(input, prompt);
-        await new Promise(resolve => setTimeout(resolve, 250));
+        await waitFor(() => inputText(input), 600).catch(() => null);
       }
       if (!inputText(input)) throw new Error('ChatGPT prompt could not be inserted');
       reportProgress('prompt-inserted');
