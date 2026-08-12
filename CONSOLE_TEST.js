@@ -5,7 +5,7 @@
  Remove it with: window.__xcbConsoleCleanup()
 */
 (() => {
-  const VERSION = '0.10.24-test';
+  const VERSION = '0.10.27-test';
   const NOTION_SYNC_EPOCH = 2;
   const STYLE_ID = 'xcb-console-style';
   const CALENDAR_LIVE_STYLE_ID = 'xcb-console-calendar-live-style';
@@ -556,11 +556,30 @@
     .filter(language => ['ko', 'zh', 'en'].includes(language) && language !== directionTarget()))];
   const directionSource = () => selectedSourceLanguages()[0] || (directionTarget() === 'ko' ? 'zh' : 'ko');
   const directionTarget = () => settings.targetLanguage || String(settings.direction || 'ko-zh').split('-')[1] || 'zh';
-  const detectedSourceLanguage = text => hasKorean(text) ? 'ko' : hasChinese(text) ? 'zh' : hasEnglish(text) ? 'en' : '';
+  const languageCharacterCounts = text => {
+    const counts = { ko: 0, zh: 0, en: 0 };
+    for (const character of String(text || '')) {
+      if (/[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF]/.test(character)) counts.ko += 1;
+      else if (/[\u3400-\u4DBF\u4E00-\u9FFF]/.test(character)) counts.zh += 1;
+      else if (/[A-Za-z]/.test(character)) counts.en += 1;
+    }
+    return counts;
+  };
+  const detectedSourceLanguages = text => {
+    const counts = languageCharacterCounts(text);
+    return ['ko', 'zh', 'en'].filter(language => counts[language] > 0);
+  };
+  const detectedSourceLanguage = text => {
+    const counts = languageCharacterCounts(text);
+    const [source, count] = Object.entries(counts).sort((left, right) => right[1] - left[1])[0] || [];
+    return count ? source : '';
+  };
+  const translatableSourcesFor = (text, target = directionTarget()) => detectedSourceLanguages(text)
+    .filter(language => language !== target && selectedSourceLanguages().includes(language));
   const directionForTarget = (recordOrText, target) => {
     const text = typeof recordOrText === 'string' ? recordOrText : (recordOrText?.text || '');
-    const source = detectedSourceLanguage(text);
-    return source && source !== target ? `${source}-${target}` : '';
+    const sources = translatableSourcesFor(text, target);
+    return sources.length ? `${sources.join('+')}-${target}` : '';
   };
   const directionFor = recordOrText => directionForTarget(recordOrText, directionTarget());
   const translationConflictsWithDirection = (text, direction) => {
@@ -570,6 +589,12 @@
     if (target === 'zh') return hasKorean(value) && !hasChinese(value);
     if (target === 'ko') return hasChinese(value) && !hasKorean(value);
     return false;
+  };
+  const translationMatchesDirection = (text, direction) => {
+    const target = String(direction || '').split('-')[1];
+    if (target === 'zh') return hasChinese(text);
+    if (target === 'ko') return hasKorean(text);
+    return Boolean(String(text || '').trim());
   };
   const uiLanguage = () => directionTarget() === 'ko' ? 'ko' : 'zh';
   const t = (key, ...args) => {
@@ -583,7 +608,10 @@
   const touch = matchMedia('(pointer: coarse)').matches;
   // X's actual message bubble has this stable test id.  Do not include ancestor
   // containers here: translating both an ancestor and a bubble creates nested cards.
-  const selector = '[data-testid^="message-text-"]';
+  // X also names the long-message "Show more" control message-text-toggle.
+  // Exclude it so indexing, quote recovery, and translation never treat the
+  // toggle button itself as a chat message.
+  const selector = '[data-testid^="message-text-"]:not([data-testid="message-text-toggle"])';
   const nativeInteractiveSelector = [
     'button', 'a', 'input', 'textarea', 'select', 'option', 'label',
     '[contenteditable="true"]', '[role="button"]', '[role="menuitem"]',
@@ -652,6 +680,15 @@
   const recordAvailabilityMarkup = record => record?.deletedConfirmed
     ? `<span class="xcb-console-deleted-dot" aria-hidden="true"></span>${escape(t('deletedConfirmed'))}`
     : escape(recordAvailability(record));
+  const expandLongMessage = el => {
+    const toggle = el?.querySelector?.('[data-testid="message-text-toggle"]');
+    if (!(toggle instanceof HTMLElement) || toggle.dataset.xcbExpansionRequested === 'true') return false;
+    const label = String(toggle.textContent || '').replace(/\s+/g, ' ').trim();
+    if (!/^(?:show more|顯示更多|查看更多|더 보기|자세히 보기|펼치기)$/i.test(label)) return false;
+    toggle.dataset.xcbExpansionRequested = 'true';
+    toggle.click();
+    return true;
+  };
   const textOf = el => {
     const directMessage = el.querySelector('span[dir="auto"] > span:first-child');
     const text = directMessage?.textContent?.trim() || '';
@@ -689,7 +726,20 @@
         if (looksUiPolluted(value)) { delete record[field][key]; changed = true; }
       }
     }
-    if (currentText && record.text !== currentText) { record.text = currentText; changed = true; }
+    if (currentText && record.text !== currentText) {
+      // A collapsed X message may first expose only its shortened preview and
+      // then replace it with the full text after "Show more" is clicked. Any
+      // automatic translation made from that preview is no longer valid.
+      // Preserve user-authored text, but make every automatic slot eligible
+      // for a fresh translation of the complete source.
+      for (const [direction, meta] of Object.entries(record.translationMeta || {})) {
+        if (!['google', 'gemini', 'openai'].includes(meta?.source)) continue;
+        delete record.translations?.[direction];
+        delete record.translationMeta[direction];
+      }
+      record.text = currentText;
+      changed = true;
+    }
     if (changed) {
       record.autoTranslationTried = {};
       delete record.autoTranslationError;
@@ -699,6 +749,7 @@
     return changed;
   };
   let scheduleNotionAutoSync = () => {};
+  let captureVisibleMessagesAndQuotes = () => 0;
   let suppressNotionAutoSync = false;
   let saveTimer = 0;
   let stateDirty = false;
@@ -742,10 +793,7 @@
     .map(id => state.messages[id])
     .filter(record => record?.text === text);
   Object.values(state.messages).forEach(indexRecordText);
-  const sourceMatches = text => {
-    const source = detectedSourceLanguage(text);
-    return Boolean(source && source !== directionTarget() && selectedSourceLanguages().includes(source));
-  };
+  const sourceMatches = text => translatableSourcesFor(text).length > 0;
   const translationScopeMatches = record => settings.translationScope === 'both'
     || (settings.translationScope === 'other' && record?.speakerSide === 'other')
     || (settings.translationScope === 'self' && record?.speakerSide === 'self');
@@ -753,12 +801,12 @@
   const targetMatches = text => directionTarget() === 'zh' ? hasChinese(text) : hasKorean(text);
   const targetLanguageFor = target => target === 'zh' ? 'zh-TW' : 'ko';
   const targetLanguage = () => targetLanguageFor(directionTarget());
-  const directionLabel = direction => ({
-    'ko-zh': '韓文 → 繁中',
-    'zh-ko': '繁中 → 韓文',
-    'en-zh': '英文 → 繁中',
-    'en-ko': '英文 → 韓文'
-  })[direction] || direction;
+  const directionLabel = direction => {
+    const [sourcePart = '', target = ''] = String(direction || '').split('-');
+    const labels = { ko: '韓文', zh: '繁中', en: '英文' };
+    const sources = sourcePart.split('+').filter(Boolean).map(language => labels[language] || language).join('、');
+    return sources && target ? `${sources} → ${labels[target] || target}` : direction;
+  };
   const selectedDirectionLabel = () => {
     const languageLabel = language => ({ ko: '韓文', zh: '繁中', en: '英文' })[language] || language;
     const orderedSources = ['ko', 'zh', 'en'].filter(language => selectedSourceLanguages().includes(language));
@@ -769,7 +817,16 @@
     if (record.translation && !record.translations['ko-zh']) record.translations['ko-zh'] = record.translation;
     if (!sourceMatches(record.text || '')) return '';
     const direction = directionFor(record);
-    const translation = (direction && record.translations[direction]) || '';
+    let translation = (direction && record.translations[direction]) || '';
+    const currentMeta = record.translationMeta?.[direction] || {};
+    if (translation && currentMeta.source === 'google'
+      && detectedSourceLanguages(record.text || '').length > 1
+      && Number(currentMeta.pipeline || 0) < 2) translation = '';
+    if (!translation && direction?.includes('+')) {
+      const legacyDirection = `${detectedSourceLanguage(record.text || '')}-${directionTarget()}`;
+      const legacySource = record.translationMeta?.[legacyDirection]?.source || '';
+      if (legacySource !== 'google') translation = record.translations[legacyDirection] || '';
+    }
     return translationConflictsWithDirection(translation, direction) ? '' : translation;
   };
   const collectionTranslation = (record, prefix) => {
@@ -783,9 +840,25 @@
     record.translations ||= {};
     record.translationMeta ||= {};
     if (!direction) return;
+    const previousMeta = record.translationMeta[direction] || {};
     record.translations[direction] = text;
-    record.translationMeta[direction] = { source, updatedAt: new Date().toISOString() };
+    record.translationMeta[direction] = {
+      source,
+      updatedAt: new Date().toISOString(),
+      revision: Number(previousMeta.revision || 0) + 1,
+      pipeline: source === 'google' ? 2 : Number(previousMeta.pipeline || 0)
+    };
     record.updatedAt = new Date().toISOString();
+  };
+  const translationSlotToken = (record, direction) => {
+    const meta = record?.translationMeta?.[direction] || {};
+    return JSON.stringify([
+      record?.translations?.[direction] || '',
+      meta.source || '',
+      meta.updatedAt || '',
+      Number(meta.revision || 0),
+      Number(meta.pipeline || 0)
+    ]);
   };
   const setActiveTranslation = (record, text, source = 'manual') => {
     const direction = directionFor(record) || `${directionSource()}-${directionTarget()}`;
@@ -796,7 +869,12 @@
     if (record.notes && !record.notesByDirection['ko-zh']) record.notesByDirection['ko-zh'] = record.notes;
     if (!sourceMatches(record.text || '')) return '';
     const direction = directionFor(record);
-    return (direction && record.notesByDirection[direction]) || '';
+    if (direction && record.notesByDirection[direction]) return record.notesByDirection[direction];
+    if (direction?.includes('+')) {
+      const legacyDirection = `${detectedSourceLanguage(record.text || '')}-${directionTarget()}`;
+      return record.notesByDirection[legacyDirection] || '';
+    }
+    return '';
   };
   const setNotesForDirection = (record, direction, text) => {
     record.notesByDirection ||= {};
@@ -965,8 +1043,9 @@
     ];
     const records = scopedMessageRecords();
     const messageBlock = (record, heading = '訊息') => {
-      const translation = record.translations?.['ko-zh'] || record.translations?.['zh-ko'] || record.translations?.['en-zh'] || record.translations?.['en-ko'] || '';
-      const notes = record.notesByDirection?.['ko-zh'] || record.notesByDirection?.['zh-ko'] || record.notesByDirection?.['en-zh'] || record.notesByDirection?.['en-ko'] || record.notes || '';
+      const direction = preferredDirection(record);
+      const translation = record.translations?.[direction] || record.translation || '';
+      const notes = record.notesByDirection?.[direction] || record.notes || '';
       lines.push(`### ${heading} · ${record.id}`, '');
       if (record.tags?.length) lines.push(`- 標籤：${record.tags.map(tag => `#${tag}`).join(' ')}`);
       if (record.quoteAuthor) lines.push(`- 引用作者：${record.quoteAuthor}`);
@@ -1056,7 +1135,12 @@
       branchIds: [...new Set([...(legacy.branchIds || []), ...(stable.branchIds || [])])],
       quotedBy: [...(stable.quotedBy || [])]
     };
-    for (const direction of ['ko-zh', 'zh-ko', 'en-zh', 'en-ko']) {
+    const directions = new Set([
+      'ko-zh', 'zh-ko', 'en-zh', 'en-ko',
+      ...Object.keys(legacy.translations || {}), ...Object.keys(stable.translations || {}),
+      ...Object.keys(legacy.notesByDirection || {}), ...Object.keys(stable.notesByDirection || {})
+    ]);
+    for (const direction of directions) {
       const legacySource = legacy.translationMeta?.[direction]?.source;
       const stableSource = stable.translationMeta?.[direction]?.source;
       if (legacy.translations?.[direction] && (!stable.translations?.[direction] || (legacySource === 'manual' && stableSource !== 'manual'))) {
@@ -1116,6 +1200,17 @@
     return { records: [...stableCopies.values(), ...remaining], collapsed };
   };
   const notionBackupRecords = () => {
+    // X virtualizes the conversation. Capture every message and quote that is
+    // mounted at the instant the user starts a backup, including untranslated
+    // target-language quotes that would otherwise never create a card.
+    const previousAutoSyncSuppression = suppressNotionAutoSync;
+    suppressNotionAutoSync = true;
+    try {
+      captureVisibleMessagesAndQuotes();
+      flushSave();
+    } finally {
+      suppressNotionAutoSync = previousAutoSyncSuppression;
+    }
     const result = [];
     for (const [conversationId, conversation] of Object.entries(state.conversations || {})) {
       result.push({
@@ -1247,6 +1342,9 @@
     const lastSyncAt = Date.parse(settings.notionLastSyncAt || '');
     if (notionIsFullSync()) return records;
     return records.filter(record => {
+      // Quote recovery is sparse and important. Always upsert these rows so a
+      // quote missed by an older incremental run can repair itself later.
+      if (record.kind === '引用備份' || String(record.quoteParentSyncIds || '').trim()) return true;
       const updatedAt = Date.parse(record.updatedAt || '');
       return !Number.isFinite(updatedAt) || updatedAt > lastSyncAt;
     });
@@ -1388,12 +1486,16 @@
       }
     }, Math.max(1000, delay));
   };
-  const notionDirectionKey = record => ({
-    '繁中 → 韓文': 'zh-ko',
-    '韓文 → 繁中': 'ko-zh',
-    '英文 → 繁中': 'en-zh',
-    '英文 → 韓文': 'en-ko'
-  })[record.direction] || 'ko-zh';
+  const notionDirectionKey = record => {
+    const label = String(record.direction || '').trim();
+    const direct = ({ '繁中 → 韓文': 'zh-ko', '韓文 → 繁中': 'ko-zh', '英文 → 繁中': 'en-zh', '英文 → 韓文': 'en-ko' })[label];
+    if (direct) return direct;
+    const [sourceLabel = '', targetLabel = ''] = label.split(/\s*→\s*/u);
+    const language = value => ({ '韓文': 'ko', '한국어': 'ko', '繁中': 'zh', '繁體中文': 'zh', '英文': 'en', 'English': 'en' })[value.trim()] || '';
+    const target = language(targetLabel);
+    const sources = sourceLabel.split(/[、,，]/u).map(language).filter(source => source && source !== target);
+    return sources.length && target ? `${[...new Set(sources)].join('+')}-${target}` : 'ko-zh';
+  };
   const notionSourceKey = source => ({ '人工': 'manual', 'Gemini': 'gemini', 'OpenAI': 'openai', 'Google': 'google' })[source] || '';
   const notionSourceRank = source => ({ manual: 3, gemini: 2, openai: 2, google: 1 })[source] || 0;
   const notionTimestamp = value => {
@@ -1803,7 +1905,7 @@
     delete record.autoTranslationRetry?.[requestedDirection || directionFor(record) || `${directionSource()}-${directionTarget()}`];
   };
   const retryDelay = records => {
-    const delays = records.map(record => retryInfo(record).nextAt - Date.now()).filter(delay => delay > 0);
+    const delays = records.map(item => retryInfo(item.record || item, item.direction || '').nextAt - Date.now()).filter(delay => delay > 0);
     return Math.max(500, delays.length ? Math.min(...delays) : 2000);
   };
   const messageContainer = target => {
@@ -1959,6 +2061,7 @@
     return { el, record: recordFor(el, index) };
   };
   const recordFor = (el, index) => {
+    const expansionRequested = expandLongMessage(el);
     const text = textOf(el); const id = messageId(el, index);
     // Migrate a draft made by the older text+index identifier when it is still
     // unambiguous on the current screen.
@@ -1984,6 +2087,7 @@
     if (contentChanged) save();
     else if (metadataChanged) saveLocalMetadata();
     rememberQuotedMessage(el, record);
+    if (expansionRequested) scheduleAutoTranslation(80);
     return record;
   };
   const calendarIndexCount = (conversationId = currentConversationId()) => Object.keys(calendarEntriesFor(conversationId)).length;
@@ -2260,6 +2364,14 @@
     }
     drawQuotePreview(quote.element, recovered);
     return recovered;
+  };
+  captureVisibleMessagesAndQuotes = () => {
+    let captured = 0;
+    document.querySelectorAll(selector).forEach((el, index) => {
+      const record = recordFor(el, index);
+      if (record) captured += 1;
+    });
+    return captured;
   };
   function restoreQuotePreview(quote) {
     if (!quote) return;
@@ -2569,7 +2681,108 @@
   }
 
   const wait = delay => new Promise(resolve => setTimeout(resolve, delay));
-  async function requestGoogleText(text, requestedTarget = targetLanguage(), attempt = 0) {
+  const GOOGLE_DRAFT_CACHE_KEY = 'xcb-google-draft-cache-v2';
+  const GOOGLE_DRAFT_CACHE_MAX = 500;
+  const GOOGLE_DRAFT_CACHE_MAX_BYTES = 1.5 * 1024 * 1024;
+  const GOOGLE_DRAFT_CACHE_TTL = 90 * 24 * 60 * 60 * 1000;
+  const GOOGLE_REQUEST_TIMEOUT = 15000;
+  const googleRequestsInFlight = new Map();
+  const googleRequestQueue = [];
+  const googleDraftCache = new Map();
+  const googleDraftEntryValid = (key, entry, now = Date.now()) => (
+    typeof key === 'string' && key.startsWith('v2:')
+    && typeof entry?.text === 'string' && typeof entry?.value === 'string'
+    && typeof entry?.source === 'string' && typeof entry?.target === 'string'
+    && Number.isFinite(entry?.createdAt) && entry.createdAt > 0
+    && entry.createdAt <= now + 24 * 60 * 60 * 1000
+    && now - entry.createdAt <= GOOGLE_DRAFT_CACHE_TTL
+    && Number.isFinite(entry?.lastUsedAt)
+  );
+  const pruneGoogleDraftCache = () => {
+    const now = Date.now();
+    for (const [key, entry] of googleDraftCache) {
+      if (!googleDraftEntryValid(key, entry, now)) googleDraftCache.delete(key);
+    }
+    const storedBytes = () => new TextEncoder().encode(JSON.stringify([...googleDraftCache])).byteLength;
+    let bytes = storedBytes();
+    while (googleDraftCache.size > GOOGLE_DRAFT_CACHE_MAX || bytes > GOOGLE_DRAFT_CACHE_MAX_BYTES) {
+      googleDraftCache.delete(googleDraftCache.keys().next().value);
+      bytes = storedBytes();
+    }
+  };
+  const readGoogleDraftStore = () => {
+    const gmValue = chatGPTStoreGet(GOOGLE_DRAFT_CACHE_KEY);
+    if (Array.isArray(gmValue)) return gmValue;
+    try {
+      const localValue = JSON.parse(localStorage.getItem(GOOGLE_DRAFT_CACHE_KEY) || 'null');
+      return Array.isArray(localValue) ? localValue : null;
+    } catch { return null; }
+  };
+  const writeGoogleDraftStore = value => {
+    if (typeof GM_setValue === 'function') {
+      chatGPTStoreSet(GOOGLE_DRAFT_CACHE_KEY, value);
+      return;
+    }
+    try { localStorage.setItem(GOOGLE_DRAFT_CACHE_KEY, JSON.stringify(value)); } catch {}
+  };
+  const storedGoogleDrafts = readGoogleDraftStore();
+  if (Array.isArray(storedGoogleDrafts)) {
+    for (const entry of storedGoogleDrafts) {
+      if (Array.isArray(entry) && entry.length === 2 && googleDraftEntryValid(entry[0], entry[1])) {
+        googleDraftCache.set(entry[0], entry[1]);
+      }
+    }
+    pruneGoogleDraftCache();
+  }
+  let googleDraftCacheTimer = 0;
+  let googleRequestQueueTimer = 0;
+  const googleSourceFor = text => detectedSourceLanguage(text) || 'auto';
+  const googleDraftCacheKey = (text, requestedTarget, source = googleSourceFor(text)) => `v2:${source}:${requestedTarget}:${hash(text)}`;
+  const flushGoogleDraftCache = () => {
+    clearTimeout(googleDraftCacheTimer);
+    googleDraftCacheTimer = 0;
+    writeGoogleDraftStore([...googleDraftCache]);
+  };
+  const scheduleGoogleDraftCacheSave = () => {
+    if (googleDraftCacheTimer) return;
+    googleDraftCacheTimer = setTimeout(flushGoogleDraftCache, 5000);
+  };
+  const getGoogleDraft = (text, requestedTarget, source = googleSourceFor(text)) => {
+    const key = googleDraftCacheKey(text, requestedTarget, source);
+    const entry = googleDraftCache.get(key);
+    if (!googleDraftEntryValid(key, entry) || entry.text !== text
+      || entry.source !== source || entry.target !== requestedTarget) {
+      if (entry) { googleDraftCache.delete(key); scheduleGoogleDraftCacheSave(); }
+      return '';
+    }
+    googleDraftCache.delete(key);
+    googleDraftCache.set(key, { ...entry, lastUsedAt: Date.now() });
+    scheduleGoogleDraftCacheSave();
+    return entry.value;
+  };
+  const setGoogleDraft = (text, requestedTarget, value, source = googleSourceFor(text)) => {
+    const translated = String(value || '').trim();
+    const target = requestedTarget === 'zh-TW' ? 'zh' : requestedTarget;
+    const direction = source === 'auto' ? directionForTarget(text, target) : `${source}-${target}`;
+    if (!direction || !translated || translated === String(text || '').trim()
+      || !translationMatchesDirection(translated, direction)
+      || translationConflictsWithDirection(translated, direction)) return;
+    const key = googleDraftCacheKey(text, requestedTarget, source);
+    const now = Date.now();
+    const previous = googleDraftCache.get(key);
+    googleDraftCache.delete(key);
+    googleDraftCache.set(key, {
+      text,
+      value: translated,
+      source,
+      target: requestedTarget,
+      createdAt: previous?.text === text ? previous.createdAt : now,
+      lastUsedAt: now
+    });
+    pruneGoogleDraftCache();
+    scheduleGoogleDraftCacheSave();
+  };
+  async function fetchGoogleText(text, requestedTarget, source = 'auto', attempt = 0) {
     const testFixture = /^(localhost|127\.0\.0\.1)$/.test(location.hostname)
       ? document.querySelector('[data-xcb-google-fixture]')
       : null;
@@ -2580,17 +2793,233 @@
       await wait(Math.max(0, Number(testFixture.dataset.delay) || 0));
       return requestedTarget === 'ko' ? (testFixture.dataset.ko || '') : (testFixture.dataset.zh || '');
     }
-    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl=${requestedTarget}&dt=t&q=${encodeURIComponent(text)}`;
-    const response = await fetch(url);
-    if (!response.ok) {
-      if ((response.status === 429 || response.status >= 500) && attempt < 2) {
-        await wait(450 * (2 ** attempt));
-        return requestGoogleText(text, requestedTarget, attempt + 1);
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${encodeURIComponent(source)}&tl=${requestedTarget}&dt=t&q=${encodeURIComponent(text)}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), GOOGLE_REQUEST_TIMEOUT);
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      if (!response.ok) {
+        if ((response.status === 429 || response.status >= 500) && attempt < 2) {
+          const retryAfter = Number(response.headers.get('retry-after'));
+          const retryDelay = Number.isFinite(retryAfter) && retryAfter > 0
+            ? Math.min(10000, retryAfter * 1000)
+            : 450 * (2 ** attempt) + Math.floor(Math.random() * 180);
+          await wait(retryDelay);
+          return fetchGoogleText(text, requestedTarget, source, attempt + 1);
+        }
+        throw new Error(`Google Translate HTTP ${response.status}`);
       }
-      throw new Error(`Google Translate HTTP ${response.status}`);
+      const data = await response.json();
+      return (data[0] || []).filter(Array.isArray).map(chunk => chunk[0] || '').join('');
+    } catch (error) {
+      if ((error?.name === 'AbortError' || error instanceof TypeError) && attempt < 2) {
+        await wait(450 * (2 ** attempt) + Math.floor(Math.random() * 180));
+        return fetchGoogleText(text, requestedTarget, source, attempt + 1);
+      }
+      if (error?.name === 'AbortError') throw new Error('Google Translate request timed out');
+      throw error;
+    } finally {
+      clearTimeout(timeout);
     }
-    const data = await response.json();
-    return (data[0] || []).filter(Array.isArray).map(chunk => chunk[0] || '').join('');
+  }
+  const settleGoogleQueueItem = (item, value, error = null) => {
+    if (googleRequestsInFlight.get(item.key) === item.promise) googleRequestsInFlight.delete(item.key);
+    if (error) item.reject(error);
+    else {
+      setGoogleDraft(item.text, item.target, value, item.source);
+      item.resolve(value);
+    }
+  };
+  const translateGoogleQueueSingles = async items => {
+    let next = 0;
+    const worker = async () => {
+      while (next < items.length) {
+        const item = items[next++];
+        try {
+          const translated = await fetchGoogleText(item.text, item.target, item.source);
+          settleGoogleQueueItem(item, translated);
+        } catch (error) {
+          settleGoogleQueueItem(item, '', error);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(2, items.length) }, worker));
+  };
+  const flushGoogleRequestQueue = async () => {
+    googleRequestQueueTimer = 0;
+    const queued = googleRequestQueue.splice(0);
+    const separator = '\n\u2063\u2063\u2063\n';
+    const lanes = new Map();
+    for (const item of queued) {
+      const lane = `${item.source}\u0000${item.target}`;
+      if (!lanes.has(lane)) lanes.set(lane, []);
+      lanes.get(lane).push(item);
+    }
+    for (const items of lanes.values()) {
+      const groups = [];
+      let group = [];
+      let encodedLength = 0;
+      for (const item of items) {
+        const length = encodeURIComponent(item.text).length + encodeURIComponent(separator).length;
+        if (group.length && encodedLength + length > 2800) {
+          groups.push(group);
+          group = [];
+          encodedLength = 0;
+        }
+        group.push(item);
+        encodedLength += length;
+      }
+      if (group.length) groups.push(group);
+      for (const batch of groups) {
+        try {
+          const joined = batch.map(item => item.text).join(separator);
+          const translated = await fetchGoogleText(joined, batch[0].target, batch[0].source);
+          const parts = translated.split(separator);
+          if (parts.length !== batch.length) {
+            await translateGoogleQueueSingles(batch);
+            continue;
+          }
+          const retry = [];
+          batch.forEach((item, index) => {
+            const value = String(parts[index] || '').trim();
+            if (!value || value === item.text.trim()) retry.push(item);
+            else settleGoogleQueueItem(item, value);
+          });
+          if (retry.length > 20 && retry.length === batch.length) {
+            retry.forEach(item => settleGoogleQueueItem(item, item.text));
+          } else if (retry.length) {
+            await translateGoogleQueueSingles(retry);
+          }
+        } catch (error) {
+          // A provider outage must reject the batch as a batch. Expanding a 429
+          // or timeout into many single requests creates a retry storm.
+          batch.forEach(item => settleGoogleQueueItem(item, '', error));
+        }
+      }
+    }
+  };
+  function requestGoogleSourceChunk(text, requestedTarget, source) {
+    const cached = getGoogleDraft(text, requestedTarget, source);
+    if (cached) return Promise.resolve(cached);
+    const requestKey = `${source}\u0000${requestedTarget}\u0000${text}`;
+    const existing = googleRequestsInFlight.get(requestKey);
+    if (existing) return existing;
+    let resolve;
+    let reject;
+    const promise = new Promise((resolvePromise, rejectPromise) => {
+      resolve = resolvePromise;
+      reject = rejectPromise;
+    });
+    googleRequestsInFlight.set(requestKey, promise);
+    googleRequestQueue.push({ key: requestKey, text, source, target: requestedTarget, resolve, reject, promise });
+    if (!googleRequestQueueTimer) googleRequestQueueTimer = setTimeout(flushGoogleRequestQueue, 16);
+    return promise;
+  }
+  const splitGoogleText = (text, maxEncodedLength = 2200) => {
+    const chunks = [];
+    let remaining = String(text || '');
+    while (remaining && encodeURIComponent(remaining).length > maxEncodedLength) {
+      let end = 0;
+      let encodedLength = 0;
+      let lastBoundary = 0;
+      for (const character of remaining) {
+        const nextLength = encodedLength + encodeURIComponent(character).length;
+        if (nextLength > maxEncodedLength) break;
+        encodedLength = nextLength;
+        end += character.length;
+        if (/[\n\r\s.!?。！？…;,，；]/u.test(character)) lastBoundary = end;
+      }
+      if (!end) end = [...remaining][0]?.length || 1;
+      const cut = lastBoundary > end * 0.45 ? lastBoundary : end;
+      chunks.push(remaining.slice(0, cut));
+      remaining = remaining.slice(cut);
+    }
+    if (remaining) chunks.push(remaining);
+    return chunks;
+  };
+  async function requestGoogleSourceText(text, requestedTarget, source) {
+    const chunks = splitGoogleText(text);
+    if (chunks.length <= 1) return requestGoogleSourceChunk(String(text || ''), requestedTarget, source);
+    const translated = await Promise.all(chunks.map(async chunk => {
+      const leading = chunk.match(/^\s*/u)?.[0] || '';
+      const trailing = chunk.match(/\s*$/u)?.[0] || '';
+      const core = chunk.slice(leading.length, chunk.length - trailing.length);
+      if (!core) return chunk;
+      const value = await requestGoogleSourceChunk(core, requestedTarget, source);
+      return `${leading}${value}${trailing}`;
+    }));
+    return translated.join('');
+  }
+  const scriptLanguageOfCharacter = character => {
+    if (/[\u1100-\u11FF\u3130-\u318F\uAC00-\uD7AF]/.test(character)) return 'ko';
+    if (/[\u3400-\u4DBF\u4E00-\u9FFF]/.test(character)) return 'zh';
+    if (/[A-Za-z]/.test(character)) return 'en';
+    return '';
+  };
+  const googleScriptRuns = value => {
+    const runs = [];
+    const appendTextRuns = text => {
+      if (!text) return;
+      let current = null;
+      let neutral = '';
+      for (const character of text) {
+        const source = scriptLanguageOfCharacter(character);
+        if (!source) {
+          neutral += character;
+          continue;
+        }
+        if (!current) {
+          current = { source, text: neutral + character };
+          neutral = '';
+          continue;
+        }
+        if (current.source === source) {
+          current.text += neutral + character;
+          neutral = '';
+          continue;
+        }
+        current.text += neutral;
+        runs.push(current);
+        current = { source, text: character };
+        neutral = '';
+      }
+      if (current) {
+        current.text += neutral;
+        runs.push(current);
+      } else if (neutral) {
+        runs.push({ source: '', text: neutral, protected: true });
+      }
+    };
+    const protectedPattern = /(?:https?:\/\/|www\.)[^\s]+|@[A-Za-z0-9_]+|#[^\s#]+/giu;
+    let offset = 0;
+    for (const match of String(value || '').matchAll(protectedPattern)) {
+      appendTextRuns(String(value || '').slice(offset, match.index));
+      runs.push({ source: '', text: match[0], protected: true });
+      offset = match.index + match[0].length;
+    }
+    appendTextRuns(String(value || '').slice(offset));
+    return runs;
+  };
+  async function requestGoogleText(text, requestedTarget = targetLanguage()) {
+    const value = String(text || '');
+    const target = requestedTarget === 'zh-TW' ? 'zh' : requestedTarget;
+    const selectedSources = new Set(selectedSourceLanguages());
+    const runs = googleScriptRuns(value);
+    const translatable = runs.filter(run => !run.protected && run.source !== target && selectedSources.has(run.source));
+    if (!translatable.length) return value;
+    if (runs.length === 1 && translatable.length === 1) {
+      return requestGoogleSourceText(value, requestedTarget, translatable[0].source);
+    }
+    const translatedRuns = await Promise.all(runs.map(async run => {
+      if (run.protected || run.source === target || !selectedSources.has(run.source)) return run.text;
+      const leading = run.text.match(/^\s*/u)?.[0] || '';
+      const trailing = run.text.match(/\s*$/u)?.[0] || '';
+      const core = run.text.slice(leading.length, run.text.length - trailing.length);
+      if (!core) return run.text;
+      const translated = await requestGoogleSourceText(core, requestedTarget, run.source);
+      return `${leading}${translated}${trailing}`;
+    }));
+    return translatedRuns.join('');
   }
   const refinementPrompt = (el, record) => {
     const context = refinementContext(el);
@@ -2878,6 +3307,7 @@
         const translated = await requestGoogleText(record.text, requestedTarget);
         if (!translated.trim()
           || translated.trim() === record.text.trim()
+          || !translationMatchesDirection(translated, requestedDirection)
           || translationConflictsWithDirection(translated, requestedDirection)) throw new Error(t('googleInvalid'));
         setTranslationForDirection(record, requestedDirection, translated, 'google');
         finishAutoAttempt(record, requestedDirection);
@@ -2956,6 +3386,7 @@
         if (requestedDirection === directionFor(original)
           && translated.trim()
           && translated.trim() !== original
+          && translationMatchesDirection(translated, requestedDirection)
           && !translationConflictsWithDirection(translated, requestedDirection)) {
           record[translationField] = translated.trim();
           record[`${translationField}Source`] = 'google';
@@ -3886,7 +4317,7 @@
         customField.hidden = openaiModelPreset.value !== 'custom';
         if (!customField.hidden) customField.querySelector('input')?.focus();
       };
-      overlay.querySelector('.xcb-console-master').onclick = () => window.__xcbConsoleCleanup?.();
+      overlay.querySelector('.xcb-console-master').onclick = () => setMasterEnabled(false);
       const closeOverlay = () => {
         clearTimeout(dataSearchTimer);
         overlay.remove();
@@ -4374,36 +4805,8 @@
     editor(message.el, message.record);
   }
   async function translateBatch(texts, requestedTarget = targetLanguage()) {
-    const separator = '\n\u2063\u2063\u2063\n';
-    const result = new Array(texts.length).fill('');
-    const groups = [];
-    let group = [];
-    let encodedLength = 0;
-    texts.forEach((text, index) => {
-      const length = encodeURIComponent(text).length + encodeURIComponent(separator).length;
-      if (group.length && encodedLength + length > 2800) {
-        groups.push(group);
-        group = [];
-        encodedLength = 0;
-      }
-      group.push({ index, text });
-      encodedLength += length;
-    });
-    if (group.length) groups.push(group);
-    for (const items of groups) {
-      try {
-        const joined = await requestGoogleText(items.map(item => item.text).join(separator), requestedTarget);
-        const parts = joined.split(separator);
-        if (parts.length !== items.length) throw new Error('Google 沒有保留批次分隔符號');
-        items.forEach((item, index) => { result[item.index] = parts[index]; });
-      } catch {
-        const settled = await Promise.allSettled(items.map(item => requestGoogleText(item.text, requestedTarget)));
-        settled.forEach((item, index) => {
-          if (item.status === 'fulfilled') result[items[index].index] = item.value;
-        });
-      }
-    }
-    return result;
+    const settled = await Promise.allSettled(texts.map(text => requestGoogleText(text, requestedTarget)));
+    return settled.map(item => item.status === 'fulfilled' ? item.value : '');
   }
   const AUTO_BATCH_LIMIT = 24;
   const AUTO_SCAN_MIN_GAP = 320;
@@ -4471,37 +4874,52 @@
     })).filter(item => item.direction);
     const pendingRequests = allPendingRequests.slice(0, AUTO_BATCH_LIMIT);
     const hasMorePending = allPendingRequests.length > pendingRequests.length;
+    pendingRequests.forEach(item => {
+      item.sourceText = item.record.text;
+      item.translationSlotToken = translationSlotToken(item.record, item.direction);
+    });
     pendingRequests.forEach(({ record, direction }) => beginAutoAttempt(record, false, direction)); save();
     try {
       const translations = await translateBatch(pendingRequests.map(({ record }) => record.text), requestedGoogleTarget);
       const failed = [];
       pendingRequests.forEach(({ el, record, direction }, index) => {
         const translated = translations[index] || '';
+        const request = pendingRequests[index];
+        if (record.text !== request.sourceText
+          || translationSlotToken(record, direction) !== request.translationSlotToken
+          || record.translations?.[direction]) {
+          finishAutoAttempt(record, direction);
+          return;
+        }
         if (translated.trim()
           && translated.trim() !== record.text.trim()
+          && translationMatchesDirection(translated, direction)
           && !translationConflictsWithDirection(translated, direction)) {
           setTranslationForDirection(record, direction, translated, 'google');
           finishAutoAttempt(record, direction);
           if (el) draw(el, record);
         } else {
-          failed.push(record);
+          failed.push({ record, direction });
         }
       });
       save();
       refreshQuotePreviews();
       if (hasMorePending) scheduleAutoTranslation(420);
-      if (failed.length && failed.some(canRetryLater)) scheduleAutoTranslation(retryDelay(failed));
+      if (failed.length && failed.some(item => canRetryLater(item.record, item.direction))) scheduleAutoTranslation(retryDelay(failed));
     } catch (error) {
       console.warn('Google translation failed', error);
-      const records = pendingRequests.map(({ record }) => record);
-      if (records.some(canRetryLater)) scheduleAutoTranslation(retryDelay(records));
+      if (pendingRequests.some(item => canRetryLater(item.record, item.direction))) scheduleAutoTranslation(retryDelay(pendingRequests));
     }
   }
   document.addEventListener('contextmenu', onContext, true);
   if (touch) document.addEventListener('click', onTouchClick, true);
   document.addEventListener('keydown', onKeyDown, true);
-  const onVisibilityPersist = () => { if (document.visibilityState === 'hidden') flushSave(); };
-  const onPageHide = () => flushSave();
+  const onVisibilityPersist = () => {
+    if (document.visibilityState !== 'hidden') return;
+    flushSave();
+    flushGoogleDraftCache();
+  };
+  const onPageHide = () => { flushSave(); flushGoogleDraftCache(); };
   document.addEventListener('visibilitychange', onVisibilityPersist);
   window.addEventListener('pagehide', onPageHide);
   let positionFrame = 0;
@@ -4608,6 +5026,8 @@
     localStorage.removeItem(GEMINI_API_KEY_KEY);
     localStorage.removeItem(OPENAI_API_KEY_KEY);
     localStorage.removeItem(NOTION_SECRET_KEY);
+    googleDraftCache.clear();
+    chatGPTStoreDelete(GOOGLE_DRAFT_CACHE_KEY);
     window.__xcbConsoleCleanup?.();
     location.reload();
   };
@@ -4645,6 +5065,11 @@
     autoDueAt = 0;
     autoRerunRequested = false;
     clearTimeout(notionAutoTimer);
+    clearTimeout(googleRequestQueueTimer);
+    googleRequestQueueTimer = 0;
+    const cleanupError = new Error('X Context Bridge was closed');
+    googleRequestQueue.splice(0).forEach(item => settleGoogleQueueItem(item, '', cleanupError));
+    flushGoogleDraftCache();
     restoreAllXcbDom();
     document.getElementById(STYLE_ID)?.remove();
     document.getElementById(CALENDAR_LIVE_STYLE_ID)?.remove();
