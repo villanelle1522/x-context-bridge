@@ -5,7 +5,7 @@
  Remove it with: window.__xcbConsoleCleanup()
 */
 (() => {
-  const VERSION = '0.10.22-test';
+  const VERSION = '0.10.23-test';
   const NOTION_SYNC_EPOCH = 2;
   const STYLE_ID = 'xcb-console-style';
   const CALENDAR_LIVE_STYLE_ID = 'xcb-console-calendar-live-style';
@@ -32,6 +32,12 @@
   };
   const chatGPTStoreDelete = key => {
     try { if (typeof GM_deleteValue === 'function') GM_deleteValue(key); } catch {}
+  };
+  const chatGPTStoreListen = (key, listener) => {
+    try { return typeof GM_addValueChangeListener === 'function' ? GM_addValueChangeListener(key, listener) : null; } catch { return null; }
+  };
+  const chatGPTStoreUnlisten = listenerId => {
+    try { if (listenerId != null && typeof GM_removeValueChangeListener === 'function') GM_removeValueChangeListener(listenerId); } catch {}
   };
   const chatGPTBridgeToast = message => {
     document.querySelector('.xcb-chatgpt-bridge-toast')?.remove();
@@ -74,6 +80,11 @@
       if (chatGPTStoreGet(CHATGPT_LATEST_REQUEST_KEY) === packet.requestId) chatGPTStoreDelete(CHATGPT_LATEST_REQUEST_KEY);
       sessionStorage.setItem(runKey, 'complete');
       try { window.name = `${CHATGPT_RESULT_PREFIX}${JSON.stringify(message)}`; } catch {}
+      try { window.opener?.postMessage(message, '*'); } catch {}
+    };
+    const reportProgress = stage => {
+      const message = { source: 'xcb-chatgpt-web', type: 'status', stage, requestId: packet.requestId, recordId: packet.recordId };
+      chatGPTStoreSet(`${CHATGPT_RESULT_STORE_PREFIX}${packet.requestId}`, message);
       try { window.opener?.postMessage(message, '*'); } catch {}
     };
     const waitFor = (getter, timeout = 40000) => new Promise((resolve, reject) => {
@@ -168,8 +179,10 @@
         await new Promise(resolve => setTimeout(resolve, 250));
       }
       if (!inputText(input)) throw new Error('ChatGPT prompt could not be inserted');
+      reportProgress('prompt-inserted');
       chatGPTBridgeToast('X Context Bridge：已填入 prompt，正在自動送出。');
       if (!(await send(input))) throw new Error('ChatGPT send button did not respond');
+      reportProgress('waiting-response');
       watchResponse(baseline);
     })().catch(error => {
       post('error', { message: error.message });
@@ -279,7 +292,7 @@
   }
   const UI = {
     zh: {
-      sendToChatGPT: 'ChatGPT 自動處理', chatGPTOpening: '已開啟 ChatGPT，正在自動送出…', chatGPTCopied: '已複製 prompt；請貼到 ChatGPT。', chatGPTFailed: 'ChatGPT 自動處理失敗，prompt 已複製。', chatGPTResult: 'ChatGPT 回覆已套用',
+      sendToChatGPT: 'ChatGPT 自動處理', chatGPTOpening: '已開啟 ChatGPT，正在自動送出…', chatGPTWaiting: '已送出，等待 ChatGPT 回覆…', chatGPTApplying: '收到回覆，正在套用…', chatGPTCopied: '已複製 prompt；請貼到 ChatGPT。', chatGPTFailed: 'ChatGPT 自動處理失敗，prompt 已複製。', chatGPTResult: 'ChatGPT 回覆已套用',
       translation: '翻譯', todo: '待做', personNote: '筆記', vocabulary: '單字本', data: '搜尋／備份', api: 'API',
       autoTranslation: '自動顯示翻譯', direction: '翻譯方向', sourceLanguage: '來源語言', targetLanguageSetting: '譯文語言',
       koZh: '한국어 → 繁體中文', zhKo: '繁體中文 → 한국어',
@@ -410,7 +423,7 @@
       factoryConfirm: '清除 X Context Bridge 的所有測試譯文、待做、筆記、單字本、設定、API Key 與同步密碼？此動作無法復原。'
     },
     ko: {
-      sendToChatGPT: 'ChatGPT 자동 처리', chatGPTOpening: 'ChatGPT를 열고 자동으로 전송하는 중…', chatGPTCopied: 'prompt를 복사했습니다. ChatGPT에 붙여넣으세요.', chatGPTFailed: 'ChatGPT 자동 처리에 실패하여 prompt를 복사했습니다.', chatGPTResult: 'ChatGPT 응답을 적용했습니다',
+      sendToChatGPT: 'ChatGPT 자동 처리', chatGPTOpening: 'ChatGPT를 열고 자동으로 전송하는 중…', chatGPTWaiting: '전송 완료, ChatGPT 응답을 기다리는 중…', chatGPTApplying: '응답 수신, 적용하는 중…', chatGPTCopied: 'prompt를 복사했습니다. ChatGPT에 붙여넣으세요.', chatGPTFailed: 'ChatGPT 자동 처리에 실패하여 prompt를 복사했습니다.', chatGPTResult: 'ChatGPT 응답을 적용했습니다',
       translation: '번역', todo: '할 일', personNote: '메모', vocabulary: '단어장', data: '검색·백업', api: 'API',
       autoTranslation: '번역 자동 표시', direction: '번역 방향', sourceLanguage: '원문 언어', targetLanguageSetting: '번역 언어',
       koZh: '한국어 → 繁體中文', zhKo: '繁體中文 → 한국어',
@@ -2647,12 +2660,15 @@
     const targetUrl = storedForCompanion
       ? `https://chatgpt.com/#xcb-request=${encodeURIComponent(requestId)}`
       : `https://chatgpt.com/#xcb-packet=${encodeURIComponent(JSON.stringify(payload))}`;
-    const pending = { requestId, recordId: record.id, direction: payload.direction, window: child, button, pollTimer: 0, startedAt: Date.now(), requestStoreKey, resultStoreKey };
+    const pending = { requestId, recordId: record.id, direction: payload.direction, window: child, button, pollTimer: 0, listenerId: null, startedAt: Date.now(), requestStoreKey, resultStoreKey };
     pendingChatGPTWebRequests.set(requestId, pending);
+    pending.listenerId = chatGPTStoreListen(resultStoreKey, (_key, _oldValue, newValue) => {
+      if (!newValue?.source || newValue.requestId !== requestId) return;
+      window.__xcbChatGPTWebListener?.({ origin: 'https://chatgpt.com', source: child, data: newValue });
+    });
     pending.pollTimer = setInterval(() => {
       const storedResult = chatGPTStoreGet(resultStoreKey);
       if (storedResult?.source === 'xcb-chatgpt-web') {
-        clearInterval(pending.pollTimer);
         window.__xcbChatGPTWebListener?.({ origin: 'https://chatgpt.com', source: child, data: storedResult });
         return;
       }
@@ -2693,12 +2709,18 @@
     if (!data || data.source !== 'xcb-chatgpt-web' || !data.requestId) return;
     const pending = pendingChatGPTWebRequests.get(data.requestId);
     if (!pending || (pending.window && event.source !== pending.window)) return;
+    if (data.type === 'status') {
+      if (pending.button) pending.button.textContent = data.stage === 'waiting-response' ? t('chatGPTWaiting') : t('chatGPTOpening');
+      return;
+    }
     clearInterval(pending.pollTimer);
+    chatGPTStoreUnlisten(pending.listenerId);
     pendingChatGPTWebRequests.delete(data.requestId);
     chatGPTStoreDelete(pending.requestStoreKey);
     chatGPTStoreDelete(pending.resultStoreKey);
     if (chatGPTStoreGet(CHATGPT_LATEST_REQUEST_KEY) === data.requestId) chatGPTStoreDelete(CHATGPT_LATEST_REQUEST_KEY);
     try { pending.window.name = ''; } catch {}
+    if (pending.button) pending.button.textContent = t('chatGPTApplying');
     if (data.type === 'error') {
       if (pending.button) {
         pending.button.disabled = false;
@@ -4598,6 +4620,7 @@
     }
     for (const pending of pendingChatGPTWebRequests.values()) {
       clearInterval(pending.pollTimer);
+      chatGPTStoreUnlisten(pending.listenerId);
       chatGPTStoreDelete(pending.requestStoreKey);
       chatGPTStoreDelete(pending.resultStoreKey);
       if (chatGPTStoreGet(CHATGPT_LATEST_REQUEST_KEY) === pending.requestId) chatGPTStoreDelete(CHATGPT_LATEST_REQUEST_KEY);
